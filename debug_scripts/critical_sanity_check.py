@@ -33,7 +33,7 @@ def critical_sanity_check():
     
     # Create cipher and model
     cipher = SpeckCipher(rounds=1, device=device)
-    model = DifferentialAttack(cipher, input_size=32, hidden_size=64, num_rounds=1)
+    model = DifferentialAttack(cipher, input_size=2, hidden_size=64, num_rounds=1)
     model = model.to(device)
     
     # Generate 1 sample

@@ -40,7 +40,7 @@ def single_batch_test():
     
     # Create cipher and attack model
     cipher = SpeckCipher(rounds=1, device=device)
-    model = DifferentialAttack(cipher, input_size=32, hidden_size=64, num_rounds=1)
+    model = DifferentialAttack(cipher, input_size=2, hidden_size=64, num_rounds=1)
     model = model.to(device)
     
     # Generate single sample
@@ -111,7 +111,7 @@ def multi_sample_test():
     
     # Create cipher and attack model
     cipher = SpeckCipher(rounds=1, device=device)
-    model = DifferentialAttack(cipher, input_size=32, hidden_size=64, num_rounds=1)
+    model = DifferentialAttack(cipher, input_size=2, hidden_size=64, num_rounds=1)
     model = model.to(device)
     
     # Generate 100 samples

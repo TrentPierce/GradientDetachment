@@ -23,7 +23,7 @@ class DifferentialAttack(nn.Module):
         num_rounds: Number of cipher rounds
     """
     
-    def __init__(self, cipher, input_size=32, hidden_size=64, num_rounds=4):
+    def __init__(self, cipher, input_size=2, hidden_size=64, num_rounds=4):
         super().__init__()
         self.cipher = cipher
         self.num_rounds = num_rounds
@@ -57,9 +57,9 @@ class DifferentialAttack(nn.Module):
         P0 = self.cipher.generate_plaintexts(num_samples)
         K = self.cipher.generate_keys(num_samples)
         
-        # Apply delta to create second plaintext
+        # Apply delta to create second plaintext (float-compatible)
         P1 = P0.clone()
-        P1[:, 0] = P1[:, 0] ^ delta
+        P1[:, 0] = (P1[:, 0] + delta) % 1.0
         
         return P0, P1, K
     

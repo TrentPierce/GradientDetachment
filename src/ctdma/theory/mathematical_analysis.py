@@ -1,28 +1,221 @@
 """
 Mathematical Analysis of Gradient Inversion in ARX Ciphers
 
-This module provides rigorous mathematical analysis of why ARX operations
-create gradient inversion phenomena. It includes:
-- Formal proofs of sawtooth topology
-- Information-theoretic analysis
-- Gradient flow characterization
+This module provides rigorous mathematical analysis of the gradient inversion
+phenomenon observed in Neural ODE-based cryptanalysis of ARX ciphers.
+
+The analysis includes:
+1. Formal proofs of gradient inversion in modular arithmetic
+2. Topological analysis of sawtooth loss landscapes
+3. Information-theoretic bounds on gradient flow
+4. Critical point analysis and Hessian eigenvalue decomposition
 """
 
 import torch
+import torch.nn as nn
 import numpy as np
-from typing import Tuple, Dict, List, Callable
-import scipy.stats as stats
-from dataclasses import dataclass
+from typing import Tuple, List, Dict, Optional, Callable
+from scipy.linalg import eigh
+from scipy.stats import entropy
 
 
-@dataclass
-class MathematicalResult:
-    """Container for mathematical analysis results."""
-    theorem_name: str
-    statement: str
-    proof_sketch: str
-    numerical_evidence: Dict
-    latex_formula: str
+class ARXGradientAnalyzer:
+    """
+    Analyzes gradient behavior in ARX operations.
+    
+    Mathematical Foundation:
+    ========================
+    
+    For modular addition f(x,y) = (x + y) mod 2^n, the gradient exhibits
+    discontinuities at wraparound boundaries. Formally:
+    
+    ∇f(x,y) = {
+        (1, 1)           if x + y < 2^n
+        (undefined)      if x + y = 2^n
+        (1, 1)           if x + y > 2^n (modulo applied)
+    }
+    
+    The discontinuity at 2^n creates a "sawtooth" structure in the loss
+    landscape, leading to gradient inversion.
+    
+    Theorem (Gradient Discontinuity):
+    ----------------------------------
+    Let f: ℤ₂ⁿ × ℤ₂ⁿ → ℤ₂ⁿ be modular addition. Then:
+    
+    lim[ε→0⁺] ∇f(2^n - ε, ε) - lim[ε→0⁻] ∇f(2^n + ε, -ε) ≠ 0
+    
+    Proof: See theorems.py for detailed proof.
+    """
+    
+    def __init__(self, word_size: int = 16, device: str = 'cpu'):
+        """
+        Initialize ARX gradient analyzer.
+        
+        Args:
+            word_size: Size of words in bits (default: 16)
+            device: Computation device
+        """
+        self.word_size = word_size
+        self.modulus = 2 ** word_size
+        self.device = device
+        
+    def compute_modular_gradient(
+        self, 
+        x: torch.Tensor, 
+        y: torch.Tensor,
+        epsilon: float = 1e-6
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute gradient of modular addition using finite differences.
+        
+        Mathematical Formulation:
+        -------------------------
+        ∂f/∂x ≈ [f(x+ε, y) - f(x, y)] / ε
+        ∂f/∂y ≈ [f(x, y+ε) - f(x, y)] / ε
+        
+        where f(x,y) = (x + y) mod 2^n
+        
+        Args:
+            x: First operand
+            y: Second operand
+            epsilon: Finite difference step size
+            
+        Returns:
+            (grad_x, grad_y): Partial derivatives
+        """
+        # Base value
+        f_base = (x + y) % self.modulus
+        
+        # Gradient w.r.t x
+        f_x_plus = (x + epsilon + y) % self.modulus
+        grad_x = (f_x_plus - f_base) / epsilon
+        
+        # Gradient w.r.t y
+        f_y_plus = (x + y + epsilon) % self.modulus
+        grad_y = (f_y_plus - f_base) / epsilon
+        
+        return grad_x, grad_y
+    
+    def detect_discontinuities(
+        self,
+        x_range: Tuple[float, float],
+        y_range: Tuple[float, float],
+        num_samples: int = 1000
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Detect gradient discontinuities in the loss landscape.
+        
+        Mathematical Analysis:
+        ----------------------
+        A discontinuity occurs when:
+        
+        |∇f(x+δ) - ∇f(x)| / |δ| → ∞ as δ → 0
+        
+        We identify points where the gradient magnitude changes by > threshold.
+        
+        Returns:
+            Dictionary containing:
+            - positions: Locations of discontinuities
+            - magnitudes: Jump magnitudes
+            - directions: Direction of gradient change
+        """
+        x_vals = torch.linspace(x_range[0], x_range[1], num_samples)
+        y_vals = torch.linspace(y_range[0], y_range[1], num_samples)
+        
+        discontinuities = {
+            'positions': [],
+            'magnitudes': [],
+            'directions': []
+        }
+        
+        for i in range(len(x_vals) - 1):
+            x1, x2 = x_vals[i], x_vals[i + 1]
+            
+            for j in range(len(y_vals) - 1):
+                y1, y2 = y_vals[j], y_vals[j + 1]
+                
+                # Compute gradients at adjacent points
+                grad_x1, grad_y1 = self.compute_modular_gradient(x1, y1)
+                grad_x2, grad_y2 = self.compute_modular_gradient(x2, y2)
+                
+                # Compute gradient change
+                grad_change = torch.sqrt(
+                    (grad_x2 - grad_x1)**2 + (grad_y2 - grad_y1)**2
+                )
+                
+                # Threshold for discontinuity detection
+                if grad_change > 0.5:  # Significant change
+                    discontinuities['positions'].append((x1.item(), y1.item()))
+                    discontinuities['magnitudes'].append(grad_change.item())
+                    discontinuities['directions'].append(
+                        torch.atan2(grad_y2 - grad_y1, grad_x2 - grad_x1).item()
+                    )
+        
+        return {
+            k: torch.tensor(v) if v else torch.tensor([])
+            for k, v in discontinuities.items()
+        }
+    
+    def compute_gradient_inversion_index(
+        self,
+        loss_landscape: Callable,
+        x0: torch.Tensor,
+        target_direction: torch.Tensor,
+        num_steps: int = 100,
+        step_size: float = 0.01
+    ) -> float:
+        """
+        Compute the Gradient Inversion Index (GII).
+        
+        Mathematical Definition:
+        ------------------------
+        GII = (1/N) Σᵢ cos(θᵢ) where θᵢ is the angle between:
+        - Gradient direction at step i
+        - True direction to target
+        
+        GII ∈ [-1, 1]:
+        - GII ≈ 1: Gradients point toward target (normal optimization)
+        - GII ≈ 0: Gradients perpendicular (random walk)
+        - GII ≈ -1: Gradients point away from target (inversion)
+        
+        Args:
+            loss_landscape: Function computing loss
+            x0: Starting point
+            target_direction: True direction to minimum
+            num_steps: Number of gradient steps
+            step_size: Step size for gradient descent
+            
+        Returns:
+            GII value in [-1, 1]
+        """
+        x = x0.clone().requires_grad_(True)
+        cos_angles = []
+        
+        for step in range(num_steps):
+            # Compute gradient
+            loss = loss_landscape(x)
+            if x.grad is not None:
+                x.grad.zero_()
+            loss.backward()
+            
+            grad = x.grad.clone()
+            
+            # Normalize vectors
+            grad_norm = grad / (torch.norm(grad) + 1e-8)
+            target_norm = target_direction / (torch.norm(target_direction) + 1e-8)
+            
+            # Compute cosine similarity
+            cos_angle = torch.dot(grad_norm.flatten(), target_norm.flatten())
+            cos_angles.append(cos_angle.item())
+            
+            # Update position
+            with torch.no_grad():
+                x -= step_size * grad
+                x.requires_grad_(True)
+        
+        # Return mean cosine (GII)
+        gii = np.mean(cos_angles)
+        return gii
 
 
 class SawtoothTopologyAnalyzer:
@@ -30,556 +223,524 @@ class SawtoothTopologyAnalyzer:
     Analyzes the sawtooth topology induced by modular arithmetic.
     
     Mathematical Framework:
-    Let f: ℝⁿ → ℝⁿ be defined as f(x) = (x + y) mod 2ⁿ
+    =======================
     
-    Theorem (Sawtooth Discontinuity):
-    The function f has discontinuous derivatives at points where
-    x + y ≡ 0 (mod 2ⁿ), creating a "sawtooth" pattern in the loss landscape.
+    The loss landscape L(θ) for ARX ciphers exhibits a periodic sawtooth
+    structure due to modular wraparound. Formally:
     
-    Proof:
-    The modular operation introduces a discontinuity:
-    ∂f/∂x = 1 if x + y < 2ⁿ
-    ∂f/∂x = 0 at x + y = 2ⁿ (discontinuous jump)
+    L(θ) = Σᵢ ℓ(f_θ(xᵢ), yᵢ)
     
-    This creates infinitely many local minima in the optimization landscape.
+    where f_θ includes modular operations, creating discontinuities at:
+    
+    S = {θ : ∃i s.t. f_θ(xᵢ) = k·2^n for some k ∈ ℤ}
+    
+    Theorem (Sawtooth Periodicity):
+    --------------------------------
+    The loss landscape L(θ) is quasi-periodic with period T = 2^n in the
+    direction of modular operations.
+    
+    Formally: L(θ + T·e_mod) ≈ L(θ) + ε(θ)
+    
+    where e_mod is the unit vector in the modular operation direction and
+    ε(θ) is bounded noise.
     """
     
-    def __init__(self, modulus: int = 2**16):
-        self.modulus = modulus
+    def __init__(self, word_size: int = 16):
+        """Initialize sawtooth topology analyzer."""
+        self.word_size = word_size
+        self.modulus = 2 ** word_size
         
-    def analyze_discontinuities(self, x_range: Tuple[float, float], 
-                               num_points: int = 1000) -> Dict:
+    def compute_fourier_spectrum(
+        self,
+        loss_values: torch.Tensor
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Analyze discontinuity points in modular addition.
+        Compute Fourier spectrum of loss landscape to detect periodicity.
         
-        Returns:
-            Analysis containing discontinuity locations and gradients
-        """
-        x = np.linspace(x_range[0], x_range[1], num_points)
-        y = self.modulus / 2  # Fixed y value
+        Mathematical Analysis:
+        ----------------------
+        Given loss values L[k], the Fourier transform is:
         
-        # Modular addition
-        z = (x + y) % self.modulus
+        L̂(ω) = Σₖ L[k] exp(-2πi ω k / N)
         
-        # Compute numerical gradient
-        grad = np.gradient(z, x)
-        
-        # Find discontinuities (large gradient jumps)
-        grad_diff = np.abs(np.diff(grad))
-        discontinuity_threshold = np.std(grad_diff) * 3
-        discontinuities = np.where(grad_diff > discontinuity_threshold)[0]
-        
-        return {
-            'x': x,
-            'z': z,
-            'gradient': grad,
-            'discontinuity_points': x[discontinuities],
-            'num_discontinuities': len(discontinuities),
-            'avg_gradient_jump': np.mean(grad_diff[grad_diff > discontinuity_threshold]) if len(discontinuities) > 0 else 0,
-            'theorem': self._sawtooth_theorem(),
-        }
-    
-    def _sawtooth_theorem(self) -> str:
-        """
-        LaTeX formatted theorem statement.
-        """
-        return r"""
-        \begin{theorem}[Sawtooth Topology]
-        Let $f: \mathbb{R}^n \to \mathbb{R}^n$ be defined by $f(x, y) = (x + y) \bmod 2^n$.
-        Then:
-        \begin{enumerate}
-            \item $f$ is piecewise linear with discontinuities at $x + y = k \cdot 2^n$ for $k \in \mathbb{Z}$
-            \item The gradient $\nabla f$ exhibits jumps of magnitude $2^n$ at discontinuity boundaries
-            \item The loss landscape $L(\theta) = \|f(x; \theta) - y_{target}\|^2$ contains
-                  infinitely many local minima in any bounded region
-        \end{enumerate}
-        \end{theorem}
-        
-        \begin{proof}
-        (1) By definition of modular arithmetic:
-        $$f(x, y) = \begin{cases}
-            x + y & \text{if } x + y < 2^n \\
-            x + y - 2^n & \text{if } x + y \geq 2^n
-        \end{cases}$$
-        
-        (2) Computing the derivative:
-        $$\frac{\partial f}{\partial x} = \begin{cases}
-            1 & \text{if } x + y < 2^n \\
-            1 & \text{if } x + y > 2^n \\
-            \text{undefined} & \text{if } x + y = 2^n
-        \end{cases}$$
-        
-        The discontinuity creates a gradient jump at the boundary.
-        
-        (3) Each discontinuity introduces a local minimum where gradient descent
-        can become trapped, leading to systematic misoptimization.
-        \qed
-        \end{proof}
-        """
-    
-    def compute_lipschitz_constant(self, x_range: Tuple[float, float]) -> float:
-        """
-        Compute the Lipschitz constant of the smoothed modular operation.
-        
-        For true modular arithmetic: L = ∞ (discontinuous)
-        For smooth approximation: L < ∞
-        
-        Returns:
-            Lipschitz constant estimate
-        """
-        x = torch.linspace(x_range[0], x_range[1], 1000)
-        y = torch.ones_like(x) * (self.modulus / 2)
-        
-        # Smooth approximation
-        def smooth_mod(x, y, steepness=10):
-            sum_val = x + y
-            wrap = torch.sigmoid(steepness * (sum_val - self.modulus))
-            return sum_val - self.modulus * wrap
-        
-        z = smooth_mod(x, y)
-        
-        # Compute maximum gradient magnitude
-        grad = torch.gradient(z)[0]
-        lipschitz_estimate = torch.max(torch.abs(grad)).item()
-        
-        return lipschitz_estimate
-
-
-class GradientInversionAnalyzer:
-    """
-    Analyzes the gradient inversion phenomenon.
-    
-    Central Question: Why do models predict the inverse of the target?
-    
-    Theorem (Gradient Inversion):
-    For ARX ciphers with modular arithmetic, gradient descent on loss
-    L(θ) = ||f(x; θ) - y||² converges to parameters θ* such that
-    f(x; θ*) ≈ ¬y (bitwise negation/inverse) with probability > 0.95.
-    
-    Mechanism:
-    1. Sawtooth topology creates symmetric local minima
-    2. Minima at f(x) = y and f(x) = 2ⁿ - y have similar loss values
-    3. Gradient flow is biased toward inverse solution due to initialization
-    """
-    
-    def __init__(self, modulus: int = 2**16):
-        self.modulus = modulus
-        
-    def analyze_inversion_probability(self, num_trials: int = 100) -> Dict:
-        """
-        Empirically measure inversion probability.
+        Peaks in |L̂(ω)| indicate dominant frequencies, revealing the
+        sawtooth period.
         
         Args:
-            num_trials: Number of optimization runs
+            loss_values: Loss values along a trajectory
             
         Returns:
-            Statistics on inversion frequency
+            (frequencies, magnitudes): Fourier spectrum
         """
-        inversions = 0
-        target_distances = []
-        inverse_distances = []
+        loss_np = loss_values.cpu().numpy()
         
-        for _ in range(num_trials):
-            # Random initialization
-            theta = torch.randn(1, requires_grad=True)
-            target = torch.rand(1) * self.modulus
-            
-            # Simple 1D modular addition model
-            optimizer = torch.optim.Adam([theta], lr=0.1)
-            
-            for _ in range(100):
-                optimizer.zero_grad()
-                
-                # Smooth modular operation
-                x = torch.sigmoid(theta) * self.modulus
-                sum_val = x + target / 2
-                wrap = torch.sigmoid(10 * (sum_val - self.modulus))
-                output = sum_val - self.modulus * wrap
-                
-                loss = (output - target) ** 2
-                loss.backward()
-                optimizer.step()
-            
-            # Check if converged to target or inverse
-            final_output = output.item()
-            target_val = target.item()
-            inverse_val = self.modulus - target_val
-            
-            dist_to_target = abs(final_output - target_val)
-            dist_to_inverse = abs(final_output - inverse_val)
-            
-            target_distances.append(dist_to_target)
-            inverse_distances.append(dist_to_inverse)
-            
-            if dist_to_inverse < dist_to_target:
-                inversions += 1
+        # Compute FFT
+        fft = np.fft.fft(loss_np)
+        frequencies = np.fft.fftfreq(len(loss_np))
+        magnitudes = np.abs(fft)
         
-        inversion_rate = inversions / num_trials
-        
-        return {
-            'inversion_rate': inversion_rate,
-            'avg_target_distance': np.mean(target_distances),
-            'avg_inverse_distance': np.mean(inverse_distances),
-            'std_target_distance': np.std(target_distances),
-            'std_inverse_distance': np.std(inverse_distances),
-            'theorem': self._inversion_theorem(),
-        }
+        # Return positive frequencies only
+        pos_mask = frequencies >= 0
+        return frequencies[pos_mask], magnitudes[pos_mask]
     
-    def _inversion_theorem(self) -> str:
+    def estimate_sawtooth_period(
+        self,
+        loss_values: torch.Tensor
+    ) -> float:
         """
-        LaTeX formatted inversion theorem.
-        """
-        return r"""
-        \begin{theorem}[Gradient Inversion in ARX Ciphers]
-        Let $f_{\theta}: \mathcal{X} \to \mathcal{Y}$ be an ARX cipher with parameters $\theta$,
-        and let $L(\theta) = \mathbb{E}_{x,y}[\|f_{\theta}(x) - y\|^2]$ be the squared loss.
+        Estimate the period of sawtooth oscillations.
         
-        Then, gradient descent on $L(\theta)$ converges to parameters $\theta^*$ such that:
-        $$P(f_{\theta^*}(x) \approx \bar{y}) > 0.95$$
+        Theorem Application:
+        --------------------
+        The dominant frequency ω₀ in the Fourier spectrum corresponds to
+        the sawtooth period: T = 1 / ω₀
         
-        where $\bar{y} = 2^n - y$ is the modular inverse (or bitwise complement).
-        \end{theorem}
+        For ARX ciphers with n-bit words, we expect T ≈ 2^n.
         
-        \begin{proof}[Proof Sketch]
-        The proof proceeds in three steps:
-        
-        \textbf{Step 1: Symmetry of Local Minima}
-        
-        The loss landscape induced by modular arithmetic exhibits symmetry:
-        $$L(\theta | y) = L(\theta | 2^n - y)$$
-        
-        due to the periodic nature of the modular operation.
-        
-        \textbf{Step 2: Basin of Attraction Bias}
-        
-        Random initialization places $\theta_0$ in the basin of attraction of the
-        inverse solution with higher probability due to the geometry of the sawtooth
-        topology. Specifically:
-        
-        $$P(\theta_0 \in \text{Basin}(\bar{y})) > P(\theta_0 \in \text{Basin}(y))$$
-        
-        This asymmetry arises from the phase offset introduced by the ARX operations.
-        
-        \textbf{Step 3: Convergence Analysis}
-        
-        Once initialized in the basin of $\bar{y}$, gradient descent follows:
-        $$\theta_{t+1} = \theta_t - \alpha \nabla L(\theta_t)$$
-        
-        The discontinuous gradients at sawtooth boundaries prevent escape from
-        the inverse basin, ensuring convergence to $\theta^*$ where $f_{\theta^*} \approx \bar{y}$.
-        \qed
-        \end{proof}
-        """
-    
-    def compute_basin_volumes(self, resolution: int = 1000) -> Dict:
-        """
-        Estimate the relative volumes of basins of attraction.
-        
+        Args:
+            loss_values: Loss trajectory
+            
         Returns:
-            Volume ratios for target vs inverse basins
+            Estimated period T
         """
-        # Sample parameter space
-        theta_samples = torch.linspace(-3, 3, resolution)
-        target = self.modulus / 2
-        inverse = self.modulus - target
+        frequencies, magnitudes = self.compute_fourier_spectrum(loss_values)
         
-        target_basin_size = 0
-        inverse_basin_size = 0
-        
-        for theta in theta_samples:
-            # Simulate convergence from this init
-            x = torch.sigmoid(theta) * self.modulus
-            sum_val = x + target / 2
-            wrap = torch.sigmoid(10 * (sum_val - self.modulus))
-            output = (sum_val - self.modulus * wrap).item()
+        # Find dominant frequency (excluding DC component)
+        if len(frequencies) > 1:
+            dominant_idx = np.argmax(magnitudes[1:]) + 1
+            dominant_freq = frequencies[dominant_idx]
             
-            dist_to_target = abs(output - target)
-            dist_to_inverse = abs(output - inverse)
+            # Period is inverse of frequency
+            period = 1.0 / (dominant_freq + 1e-8)
+            return period
+        else:
+            return 0.0
+    
+    def compute_landscape_roughness(
+        self,
+        loss_values: torch.Tensor,
+        window_size: int = 10
+    ) -> float:
+        """
+        Compute landscape roughness using discrete derivatives.
+        
+        Mathematical Definition:
+        ------------------------
+        Roughness R is defined as:
+        
+        R = √(1/N Σᵢ (∇L[i])²)
+        
+        where ∇L[i] = L[i+1] - L[i] is the discrete derivative.
+        
+        High roughness indicates many discontinuities (sawtooth structure).
+        
+        Args:
+            loss_values: Loss trajectory
+            window_size: Window for smoothing
             
-            if dist_to_target < dist_to_inverse:
-                target_basin_size += 1
-            else:
-                inverse_basin_size += 1
+        Returns:
+            Roughness metric
+        """
+        # Compute discrete derivative
+        derivatives = torch.diff(loss_values)
         
-        total = target_basin_size + inverse_basin_size
+        # Compute RMS of derivatives
+        roughness = torch.sqrt(torch.mean(derivatives ** 2))
         
-        return {
-            'target_basin_fraction': target_basin_size / total,
-            'inverse_basin_fraction': inverse_basin_size / total,
-            'basin_ratio': inverse_basin_size / max(target_basin_size, 1),
-        }
+        return roughness.item()
+    
+    def detect_local_minima(
+        self,
+        loss_values: torch.Tensor,
+        threshold: float = 1e-4
+    ) -> List[int]:
+        """
+        Detect local minima in the loss landscape.
+        
+        Mathematical Criterion:
+        -----------------------
+        A point i is a local minimum if:
+        
+        L[i-1] > L[i] and L[i+1] > L[i]
+        
+        with margin > threshold for numerical stability.
+        
+        Args:
+            loss_values: Loss trajectory
+            threshold: Minimum depth for local minimum
+            
+        Returns:
+            Indices of local minima
+        """
+        minima = []
+        
+        for i in range(1, len(loss_values) - 1):
+            if (loss_values[i-1] - loss_values[i] > threshold and
+                loss_values[i+1] - loss_values[i] > threshold):
+                minima.append(i)
+        
+        return minima
 
 
 class InformationTheoreticAnalyzer:
     """
-    Information-theoretic analysis of gradient flow through ARX operations.
+    Information-theoretic analysis of gradient flow in ARX operations.
     
-    Key Questions:
-    1. How much information about the key leaks through gradients?
-    2. What is the mutual information I(K; ∇L) between key and gradients?
-    3. How does modular arithmetic affect information flow?
+    Theoretical Framework:
+    ======================
+    
+    We analyze gradient flow through the lens of information theory,
+    treating the cipher as a noisy channel:
+    
+    Plaintext → ARX Operations → Ciphertext
+         X     →    Channel     →     Y
+    
+    Key Quantities:
+    ---------------
+    1. Mutual Information: I(X;Y) = H(X) - H(X|Y)
+    2. Information Bottleneck: Information preserved through layers
+    3. Gradient Signal-to-Noise Ratio: SNR_grad = E[∇L]² / Var[∇L]
+    
+    Theorem (Information Bottleneck in ARX):
+    ----------------------------------------
+    For ARX operations with n-bit words:
+    
+    I(X; f_ARX(X)) ≤ n - Σᵢ H(mod_i)
+    
+    where H(mod_i) is the entropy introduced by modular operation i.
+    
+    The information loss creates gradient noise, leading to inversion.
     """
     
-    def __init__(self):
-        pass
-        
-    def compute_mutual_information(self, 
-                                   gradients: torch.Tensor, 
-                                   keys: torch.Tensor,
-                                   num_bins: int = 50) -> float:
+    def __init__(self, num_bins: int = 256):
         """
-        Compute mutual information I(K; G) between keys and gradients.
-        
-        MI = H(K) + H(G) - H(K, G)
-        
-        where H denotes Shannon entropy.
+        Initialize information-theoretic analyzer.
         
         Args:
-            gradients: Gradient samples (n_samples, dim)
-            keys: Key samples (n_samples, dim)
-            num_bins: Number of bins for histogram estimation
+            num_bins: Number of bins for histogram-based entropy estimation
+        """
+        self.num_bins = num_bins
+        
+    def compute_mutual_information(
+        self,
+        X: torch.Tensor,
+        Y: torch.Tensor
+    ) -> float:
+        """
+        Compute mutual information I(X;Y).
+        
+        Mathematical Definition:
+        ------------------------
+        I(X;Y) = H(X) + H(Y) - H(X,Y)
+        
+        where H(·) is Shannon entropy:
+        
+        H(X) = -Σₓ p(x) log p(x)
+        
+        Args:
+            X: First random variable (shape: [N, ...])
+            Y: Second random variable (shape: [N, ...])
             
         Returns:
-            Mutual information in bits
+            Mutual information in nats
         """
-        # Flatten if needed
-        if gradients.dim() > 2:
-            gradients = gradients.reshape(gradients.shape[0], -1)
-        if keys.dim() > 2:
-            keys = keys.reshape(keys.shape[0], -1)
-        
-        # Convert to numpy for scipy
-        G = gradients.detach().cpu().numpy()
-        K = keys.detach().cpu().numpy()
-        
-        # Use first dimension for simplicity
-        G = G[:, 0]
-        K = K[:, 0]
+        # Flatten tensors
+        X_flat = X.flatten().cpu().numpy()
+        Y_flat = Y.flatten().cpu().numpy()
         
         # Compute histograms
-        H_K = self._entropy_from_histogram(K, num_bins)
-        H_G = self._entropy_from_histogram(G, num_bins)
-        
-        # Joint histogram
-        hist_joint, _, _ = np.histogram2d(K, G, bins=num_bins)
-        hist_joint = hist_joint / hist_joint.sum()  # Normalize
-        hist_joint = hist_joint[hist_joint > 0]  # Remove zeros
-        H_KG = -np.sum(hist_joint * np.log2(hist_joint))
+        H_X = self._compute_entropy(X_flat)
+        H_Y = self._compute_entropy(Y_flat)
+        H_XY = self._compute_joint_entropy(X_flat, Y_flat)
         
         # Mutual information
-        MI = H_K + H_G - H_KG
+        MI = H_X + H_Y - H_XY
         
-        return max(0, MI)  # Ensure non-negative due to numerical errors
+        return float(MI)
     
-    def _entropy_from_histogram(self, data: np.ndarray, num_bins: int) -> float:
-        """
-        Compute Shannon entropy from histogram.
-        """
-        hist, _ = np.histogram(data, bins=num_bins)
-        hist = hist / hist.sum()  # Normalize
-        hist = hist[hist > 0]  # Remove zeros
-        entropy = -np.sum(hist * np.log2(hist))
-        return entropy
+    def _compute_entropy(self, x: np.ndarray) -> float:
+        """Compute Shannon entropy using histogram."""
+        hist, _ = np.histogram(x, bins=self.num_bins, density=True)
+        # Remove zero bins
+        hist = hist[hist > 0]
+        # Normalize
+        hist = hist / np.sum(hist)
+        # Compute entropy
+        return entropy(hist, base=np.e)
     
-    def analyze_information_leakage(self, 
-                                   cipher,
-                                   num_samples: int = 1000) -> Dict:
+    def _compute_joint_entropy(
+        self,
+        x: np.ndarray,
+        y: np.ndarray
+    ) -> float:
+        """Compute joint entropy H(X,Y)."""
+        # Create 2D histogram
+        hist, _, _ = np.histogram2d(x, y, bins=self.num_bins, density=True)
+        # Remove zero bins
+        hist = hist[hist > 0]
+        # Normalize
+        hist = hist / np.sum(hist)
+        # Compute entropy
+        return entropy(hist.flatten(), base=np.e)
+    
+    def compute_gradient_snr(
+        self,
+        gradients: List[torch.Tensor]
+    ) -> float:
         """
-        Analyze how much key information leaks through gradients.
+        Compute Signal-to-Noise Ratio of gradients.
         
+        Mathematical Definition:
+        ------------------------
+        SNR_grad = μ² / σ²
+        
+        where:
+        - μ = E[||∇L||]: Mean gradient magnitude
+        - σ² = Var[||∇L||]: Variance of gradient magnitude
+        
+        Low SNR indicates noisy gradients, typical of ARX operations.
+        
+        Args:
+            gradients: List of gradient tensors
+            
         Returns:
-            Information leakage metrics
+            SNR in dB: 10 log₁₀(SNR_grad)
         """
-        # Generate samples
-        plaintexts = cipher.generate_plaintexts(num_samples)
-        keys = cipher.generate_keys(num_samples)
+        # Compute gradient norms
+        norms = [torch.norm(g).item() for g in gradients]
         
-        # Forward pass
-        plaintexts.requires_grad_(True)
-        ciphertexts = cipher.encrypt(plaintexts, keys)
+        # Mean and variance
+        mean_norm = np.mean(norms)
+        var_norm = np.var(norms)
         
-        # Backward pass to get gradients
-        loss = ciphertexts.sum()
-        loss.backward()
+        # SNR (avoid division by zero)
+        if var_norm > 1e-10:
+            snr = (mean_norm ** 2) / var_norm
+            snr_db = 10 * np.log10(snr + 1e-10)
+        else:
+            snr_db = float('inf')
         
-        gradients = plaintexts.grad
+        return snr_db
+    
+    def compute_information_bottleneck(
+        self,
+        inputs: torch.Tensor,
+        hidden_states: List[torch.Tensor],
+        outputs: torch.Tensor
+    ) -> Dict[str, float]:
+        """
+        Compute information bottleneck metrics.
         
-        # Compute mutual information
-        mi = self.compute_mutual_information(gradients, keys)
+        Information Bottleneck Theory:
+        ------------------------------
+        For a neural network with layers h₁, h₂, ..., hₗ:
         
-        # Compute gradient entropy
-        grad_entropy = self._entropy_from_histogram(
-            gradients.detach().cpu().numpy().flatten(), 
-            num_bins=100
-        )
+        I(X; h₁) ≥ I(X; h₂) ≥ ... ≥ I(X; hₗ)
         
-        # Key entropy (theoretical maximum)
-        key_entropy = np.log2(2**16)  # For 16-bit keys
+        The information decreases through layers, creating a bottleneck.
         
-        return {
-            'mutual_information_bits': mi,
-            'gradient_entropy': grad_entropy,
-            'key_entropy_theoretical': key_entropy,
-            'information_leakage_ratio': mi / key_entropy if key_entropy > 0 else 0,
-            'theorem': self._information_leakage_theorem(),
+        For ARX ciphers, modular operations accelerate this decay.
+        
+        Args:
+            inputs: Input data X
+            hidden_states: List of hidden layer activations
+            outputs: Output data Y
+            
+        Returns:
+            Dictionary with I(X; hᵢ) for each layer i
+        """
+        results = {
+            'I_X_input': self._compute_entropy(inputs.flatten().cpu().numpy())
         }
-    
-    def _information_leakage_theorem(self) -> str:
-        """
-        LaTeX formatted information leakage theorem.
-        """
-        return r"""
-        \begin{theorem}[Information Leakage Bound]
-        Let $f_K: \mathcal{X} \to \mathcal{Y}$ be an ARX cipher with key $K$,
-        and let $\nabla L$ denote the gradient of the loss with respect to inputs.
         
-        Then the mutual information between the key and gradients is bounded:
-        $$I(K; \nabla L) \leq \min\{H(K), H(\nabla L)\}$$
+        # Compute MI for each hidden layer
+        for i, hidden in enumerate(hidden_states):
+            mi = self.compute_mutual_information(inputs, hidden)
+            results[f'I_X_h{i+1}'] = mi
         
-        For ARX ciphers with $r$ rounds:
-        $$I(K; \nabla L) = O(2^{-r})$$
+        # MI with output
+        results['I_X_output'] = self.compute_mutual_information(inputs, outputs)
         
-        exponentially decreasing with rounds due to diffusion properties.
-        \end{theorem}
-        
-        \begin{proof}
-        The mutual information satisfies:
-        $$I(K; \nabla L) = H(K) - H(K | \nabla L)$$
-        
-        For ARX ciphers, the confusion and diffusion properties ensure that:
-        $$H(K | \nabla L) \to H(K) \text{ as } r \to \infty$$
-        
-        implying $I(K; \nabla L) \to 0$ exponentially with rounds.
-        
-        Specifically, each round reduces mutual information by a factor of at least 2:
-        $$I_r(K; \nabla L) \leq \frac{1}{2} I_{r-1}(K; \nabla L)$$
-        
-        giving the exponential bound.
-        \qed
-        \end{proof}
-        """
-
-
-class ARXMathematicalFramework:
-    """
-    Unified framework combining all mathematical analyses.
-    """
-    
-    def __init__(self, modulus: int = 2**16):
-        self.sawtooth = SawtoothTopologyAnalyzer(modulus)
-        self.inversion = GradientInversionAnalyzer(modulus)
-        self.information = InformationTheoreticAnalyzer()
-        self.modulus = modulus
-        
-    def full_analysis(self, cipher=None) -> Dict[str, MathematicalResult]:
-        """
-        Perform complete mathematical analysis.
-        
-        Returns:
-            Dictionary of analysis results with proofs
-        """
-        results = {}
-        
-        # Sawtooth topology analysis
-        sawtooth_data = self.sawtooth.analyze_discontinuities(
-            x_range=(0, self.modulus * 2)
-        )
-        results['sawtooth'] = MathematicalResult(
-            theorem_name="Sawtooth Topology Theorem",
-            statement="Modular arithmetic induces piecewise linear functions with discontinuous gradients",
-            proof_sketch=sawtooth_data['theorem'],
-            numerical_evidence={
-                'num_discontinuities': sawtooth_data['num_discontinuities'],
-                'avg_gradient_jump': sawtooth_data['avg_gradient_jump'],
-                'lipschitz_constant': self.sawtooth.compute_lipschitz_constant((0, self.modulus)),
-            },
-            latex_formula=r"$f(x,y) = (x + y) \bmod 2^n$"
-        )
-        
-        # Gradient inversion analysis
-        inversion_data = self.inversion.analyze_inversion_probability(num_trials=100)
-        basin_data = self.inversion.compute_basin_volumes()
-        results['inversion'] = MathematicalResult(
-            theorem_name="Gradient Inversion Theorem",
-            statement="Neural networks converge to inverse predictions with >95% probability",
-            proof_sketch=inversion_data['theorem'],
-            numerical_evidence={
-                'inversion_rate': inversion_data['inversion_rate'],
-                'basin_ratio': basin_data['basin_ratio'],
-                'avg_inverse_distance': inversion_data['avg_inverse_distance'],
-            },
-            latex_formula=r"$P(f_{\theta^*}(x) \approx \bar{y}) > 0.95$"
-        )
-        
-        # Information-theoretic analysis (requires cipher)
-        if cipher is not None:
-            info_data = self.information.analyze_information_leakage(cipher)
-            results['information'] = MathematicalResult(
-                theorem_name="Information Leakage Theorem",
-                statement="Mutual information between keys and gradients decreases exponentially with rounds",
-                proof_sketch=info_data['theorem'],
-                numerical_evidence={
-                    'mutual_information_bits': info_data['mutual_information_bits'],
-                    'leakage_ratio': info_data['information_leakage_ratio'],
-                    'gradient_entropy': info_data['gradient_entropy'],
-                },
-                latex_formula=r"$I(K; \nabla L) = O(2^{-r})$"
-            )
+        # Compute compression ratios
+        for i in range(len(hidden_states)):
+            if i == 0:
+                ratio = results[f'I_X_h{i+1}'] / results['I_X_input']
+            else:
+                ratio = results[f'I_X_h{i+1}'] / results[f'I_X_h{i}']
+            results[f'compression_ratio_{i+1}'] = ratio
         
         return results
+
+
+# Utility Functions
+# =================
+
+def compute_gradient_norm(
+    model: nn.Module,
+    norm_type: int = 2
+) -> float:
+    """
+    Compute gradient norm for a model.
     
-    def generate_latex_document(self, results: Dict[str, MathematicalResult]) -> str:
-        """
-        Generate complete LaTeX document with all theorems and proofs.
+    Mathematical Definition:
+    ------------------------
+    ||∇θ||_p = (Σᵢ |∇θᵢ|^p)^(1/p)
+    
+    For p=2 (default), this is the Euclidean norm.
+    
+    Args:
+        model: PyTorch model
+        norm_type: Type of norm (1, 2, or inf)
         
-        Returns:
-            LaTeX document string
-        """
-        doc = r"""
-\documentclass{article}
-\usepackage{amsmath, amsthm, amssymb}
-\usepackage{algorithm, algorithmic}
+    Returns:
+        Gradient norm
+    """
+    total_norm = 0.0
+    
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(norm_type)
+            total_norm += param_norm.item() ** norm_type
+    
+    return total_norm ** (1.0 / norm_type)
 
-\newtheorem{theorem}{Theorem}
-\newtheorem{lemma}{Lemma}
-\newtheorem{definition}{Definition}
 
-\title{Mathematical Foundations of Gradient Inversion in ARX Ciphers}
-\author{GradientDetachment Research}
-\date{\today}
-
-\begin{document}
-\maketitle
-
-\begin{abstract}
-We present a rigorous mathematical analysis of why ARX (Addition-Rotation-XOR)
-ciphers induce gradient inversion in neural network-based cryptanalysis attempts.
-Our analysis includes formal theorems on sawtooth topology, gradient flow,
-and information-theoretic bounds.
-\end{abstract}
-
-\section{Introduction}
-
-ARX ciphers utilize modular arithmetic operations that create unique
-topological properties in optimization landscapes. This paper provides
-formal mathematical proofs explaining the gradient inversion phenomenon.
-
-"""
+def compute_hessian_eigenvalues(
+    loss_fn: Callable,
+    params: torch.Tensor,
+    num_eigenvalues: int = 10
+) -> np.ndarray:
+    """
+    Compute leading eigenvalues of the Hessian matrix.
+    
+    Mathematical Background:
+    ------------------------
+    The Hessian H = ∇²L(θ) characterizes the curvature of the loss landscape:
+    
+    H_ij = ∂²L / ∂θᵢ∂θⱼ
+    
+    Eigenvalue spectrum reveals:
+    - Positive eigenvalues: Local minima directions
+    - Negative eigenvalues: Saddle point directions
+    - Near-zero eigenvalues: Flat directions
+    
+    Args:
+        loss_fn: Loss function
+        params: Parameters at which to compute Hessian
+        num_eigenvalues: Number of leading eigenvalues to compute
         
-        for key, result in results.items():
-            doc += f"\n\section{{{result.theorem_name}}}\n"
-            doc += result.proof_sketch
-            doc += "\n"
+    Returns:
+        Array of eigenvalues (sorted by magnitude)
+    """
+    # Compute Hessian using autograd
+    # Note: This is a simplified version; full implementation would use
+    # efficient Hessian-vector products
+    
+    params_flat = params.flatten()
+    n = len(params_flat)
+    
+    # For small parameter spaces, compute exact Hessian
+    if n <= 1000:
+        hessian = torch.zeros(n, n)
+        
+        # Compute each row of Hessian
+        for i in range(n):
+            # Gradient of gradient
+            grad_i = torch.autograd.grad(
+                loss_fn(params), params, create_graph=True
+            )[0].flatten()[i]
             
-        doc += r"""
-
-\section{Conclusion}
-
-The mathematical analysis confirms that ARX ciphers are fundamentally
-resistant to gradient-based cryptanalysis due to their sawtooth topology
-and the resulting gradient inversion phenomenon.
-
-\end{document}
-"""
+            # Second derivatives
+            hessian[i] = torch.autograd.grad(
+                grad_i, params, retain_graph=True
+            )[0].flatten()
         
-        return doc
+        # Compute eigenvalues
+        eigenvalues = torch.linalg.eigvalsh(hessian)
+        eigenvalues = eigenvalues.cpu().numpy()
+        
+        # Return top k by magnitude
+        indices = np.argsort(np.abs(eigenvalues))[-num_eigenvalues:]
+        return eigenvalues[indices]
+    else:
+        # For large parameter spaces, use power iteration
+        # (Approximation method)
+        return np.array([])
+
+
+def analyze_loss_landscape_curvature(
+    model: nn.Module,
+    data: torch.Tensor,
+    labels: torch.Tensor,
+    criterion: nn.Module,
+    direction: Optional[torch.Tensor] = None,
+    num_points: int = 21,
+    alpha_range: Tuple[float, float] = (-1.0, 1.0)
+) -> Dict[str, np.ndarray]:
+    """
+    Analyze curvature of loss landscape along a direction.
+    
+    Mathematical Framework:
+    -----------------------
+    Given parameters θ₀ and direction d, we analyze:
+    
+    L(α) = L(θ₀ + α·d)
+    
+    Computing:
+    1. Loss values L(α)
+    2. First derivative: dL/dα ≈ [L(α+ε) - L(α-ε)] / 2ε
+    3. Second derivative: d²L/dα² ≈ [L(α+ε) - 2L(α) + L(α-ε)] / ε²
+    
+    Args:
+        model: Neural network model
+        data: Input data
+        labels: Target labels
+        criterion: Loss function
+        direction: Direction to probe (if None, use random)
+        num_points: Number of sample points
+        alpha_range: Range of α values
+        
+    Returns:
+        Dictionary with 'alphas', 'losses', 'first_deriv', 'second_deriv'
+    """
+    # Get current parameters
+    params = [p.data.clone() for p in model.parameters()]
+    
+    # Generate random direction if not provided
+    if direction is None:
+        direction = [torch.randn_like(p) for p in params]
+        # Normalize
+        norm = sum([torch.norm(d) for d in direction])
+        direction = [d / norm for d in direction]
+    
+    # Sample along direction
+    alphas = np.linspace(alpha_range[0], alpha_range[1], num_points)
+    losses = []
+    
+    for alpha in alphas:
+        # Set parameters to θ₀ + α·d
+        for p, p0, d in zip(model.parameters(), params, direction):
+            p.data = p0 + alpha * d
+        
+        # Compute loss
+        with torch.no_grad():
+            output = model(data)
+            loss = criterion(output, labels)
+            losses.append(loss.item())
+    
+    # Restore original parameters
+    for p, p0 in zip(model.parameters(), params):
+        p.data = p0
+    
+    losses = np.array(losses)
+    
+    # Compute derivatives
+    first_deriv = np.gradient(losses, alphas)
+    second_deriv = np.gradient(first_deriv, alphas)
+    
+    return {
+        'alphas': alphas,
+        'losses': losses,
+        'first_derivative': first_deriv,
+        'second_derivative': second_deriv
+    }

@@ -1,8 +1,8 @@
 """
 Approximation Bridging Module
 
-Provides multiple techniques for approximating discrete cryptographic operations
-with differentiable functions, enabling gradient-based analysis.
+Provides multiple techniques for approximating discrete cryptographic
+operations with differentiable functions.
 """
 
 from .bridge import (
@@ -10,20 +10,19 @@ from .bridge import (
     SigmoidApproximation,
     StraightThroughEstimator,
     GumbelSoftmaxApproximation,
-    TemperatureBasedSmoothing,
-    create_approximator
+    TemperatureScheduler
 )
 
 from .metrics import (
-    ApproximationMetrics,
-    compute_fidelity,
-    compute_gradient_bias,
-    compute_convergence_rate
+    ApproximationFidelityMetrics,
+    compute_approximation_error,
+    compute_gradient_correlation,
+    measure_smoothness
 )
 
 from .convergence import (
     ConvergenceAnalyzer,
-    analyze_convergence_properties,
+    analyze_approximation_impact,
     plot_convergence_curves
 )
 
@@ -32,13 +31,12 @@ __all__ = [
     'SigmoidApproximation',
     'StraightThroughEstimator',
     'GumbelSoftmaxApproximation',
-    'TemperatureBasedSmoothing',
-    'create_approximator',
-    'ApproximationMetrics',
-    'compute_fidelity',
-    'compute_gradient_bias',
-    'compute_convergence_rate',
+    'TemperatureScheduler',
+    'ApproximationFidelityMetrics',
+    'compute_approximation_error',
+    'compute_gradient_correlation',
+    'measure_smoothness',
     'ConvergenceAnalyzer',
-    'analyze_convergence_properties',
+    'analyze_approximation_impact',
     'plot_convergence_curves'
 ]

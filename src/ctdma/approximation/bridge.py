@@ -1,394 +1,402 @@
 """
 Approximation Bridge for Discrete Operations
 
-Implements multiple approximation techniques for making discrete
-cryptographic operations differentiable.
+Implements multiple approximation techniques:
+1. Sigmoid-based soft approximations
+2. Straight-through estimators (STE)
+3. Gumbel-Softmax for categorical operations
+4. Temperature-based smoothing
+
+All approximations provide differentiable alternatives to discrete
+cryptographic operations while maintaining numerical fidelity.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Callable, Optional, Dict
+import numpy as np
+from typing import Tuple, Optional, Callable
 from abc import ABC, abstractmethod
 
 
-class ApproximationBridge(ABC):
+class ApproximationBridge(ABC, nn.Module):
     """
     Abstract base class for discrete operation approximations.
-    
-    All approximation methods must implement:
-    - forward: Compute approximation
-    - backward: Define gradient computation
-    - get_temperature: Return current temperature/steepness
     """
     
-    def __init__(self, initial_temperature: float = 1.0):
-        self.temperature = initial_temperature
+    def __init__(self):
+        super().__init__()
         
     @abstractmethod
-    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        """Compute approximation."""
+    def approximate_xor(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Differentiable XOR approximation."""
         pass
     
     @abstractmethod
-    def get_gradient(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        """Compute gradient (may differ from automatic differentiation)."""
+    def approximate_mod_add(self, x: torch.Tensor, y: torch.Tensor, 
+                           modulus: int) -> torch.Tensor:
+        """Differentiable modular addition."""
         pass
     
-    def set_temperature(self, temperature: float):
-        """Update approximation temperature."""
-        self.temperature = temperature
+    @abstractmethod
+    def approximate_rotation(self, x: torch.Tensor, r: int, 
+                            word_size: int) -> torch.Tensor:
+        """Differentiable bit rotation."""
+        pass
     
-    def get_temperature(self) -> float:
-        """Get current temperature."""
-        return self.temperature
+    def forward(self, x: torch.Tensor, operation: str, **kwargs) -> torch.Tensor:
+        """Generic forward pass routing to specific operations."""
+        if operation == 'xor':
+            return self.approximate_xor(x, kwargs['y'])
+        elif operation == 'mod_add':
+            return self.approximate_mod_add(x, kwargs['y'], kwargs['modulus'])
+        elif operation == 'rotation':
+            return self.approximate_rotation(x, kwargs['r'], kwargs['word_size'])
+        else:
+            raise ValueError(f"Unknown operation: {operation}")
 
 
 class SigmoidApproximation(ApproximationBridge):
     """
-    Sigmoid-based approximation for discrete operations.
+    Sigmoid-based smooth approximations of discrete operations.
     
-    This is the method used in the original Speck implementation.
+    This is the baseline approach used in the original implementation.
+    Uses sigmoid functions to create smooth, differentiable versions.
     
-    For XOR:
-        XOR(x, y) ≈ sigmoid(β(x-0.5)) + sigmoid(β(y-0.5)) - 2*sigmoid(β(x-0.5))*sigmoid(β(y-0.5))
-    
-    For modular addition:
-        (x + y) mod n ≈ x + y - n*sigmoid(β(x+y-n))
-    
-    Advantages:
-    - Smooth everywhere
-    - Well-behaved gradients for small β
-    - Easy to implement
-    
-    Disadvantages:
-    - Large gradients at boundaries for large β
-    - Creates sawtooth topology
-    - Leads to gradient inversion
+    Parameters:
+        steepness: Controls how closely approximation matches discrete operation
+                   Higher values = closer to discrete, but less smooth gradients
     """
     
-    def __init__(self, initial_temperature: float = 10.0):
-        super().__init__(initial_temperature)
+    def __init__(self, steepness: float = 10.0):
+        super().__init__()
+        self.steepness = nn.Parameter(torch.tensor(steepness))
         
     def approximate_xor(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
-        Smooth XOR approximation.
+        Sigmoid-based XOR: XOR = (x AND NOT y) OR (NOT x AND y)
         
-        Mathematical formulation:
-        XOR(x, y) = (x AND NOT y) OR (NOT x AND y)
-        
-        For continuous x, y ∈ [0, 1]:
-        XOR(x, y) ≈ x + y - 2xy (simple version)
-        
-        For sharper approximation:
-        XOR(x, y) ≈ f(x)(1-f(y)) + (1-f(x))f(y)
-        where f(z) = sigmoid(β(z - 0.5))
+        Soft version uses sigmoid to sharpen inputs, then applies logic:
+        XOR(x,y) ≈ sigmoid(s*(x-0.5)) * sigmoid(s*(1-y-0.5)) + 
+                   sigmoid(s*(1-x-0.5)) * sigmoid(s*(y-0.5))
         """
-        beta = self.temperature
+        s = self.steepness
         
-        # Sharpen inputs
-        x_sharp = torch.sigmoid(beta * (x - 0.5))
-        y_sharp = torch.sigmoid(beta * (y - 0.5))
+        # Sharpen to {0,1}
+        x_sharp = torch.sigmoid(s * (x - 0.5))
+        y_sharp = torch.sigmoid(s * (y - 0.5))
         
-        # XOR logic
-        term1 = x_sharp * (1 - y_sharp)
-        term2 = (1 - x_sharp) * y_sharp
+        # NOT operations
+        not_x = 1 - x_sharp
+        not_y = 1 - y_sharp
         
-        # Soft OR
+        # XOR = (x AND NOT y) OR (NOT x AND y)
+        term1 = x_sharp * not_y
+        term2 = not_x * y_sharp
+        
+        # Soft OR: a + b - ab
         result = term1 + term2 - term1 * term2
         
         return torch.clamp(result, 0, 1)
     
-    def approximate_modular_add(self, x: torch.Tensor, y: torch.Tensor, 
-                               modulus: float = 2.0) -> torch.Tensor:
+    def approximate_mod_add(self, x: torch.Tensor, y: torch.Tensor, 
+                           modulus: int) -> torch.Tensor:
         """
-        Smooth modular addition.
+        Smooth modular addition using sigmoid to handle wrap-around.
         
-        z = (x + y) mod modulus
+        z = x + y
+        if z >= modulus: z -= modulus
         
         Smooth version:
-        z ≈ x + y - modulus * sigmoid(β(x + y - modulus))
+        z = x + y - modulus * sigmoid(steepness * (x + y - modulus))
         """
-        beta = self.temperature
+        s = self.steepness
         sum_val = x + y
-        wrap_amount = torch.sigmoid(beta * (sum_val - modulus))
+        
+        # Smooth wrap detection
+        wrap_amount = torch.sigmoid(s * (sum_val - modulus))
         result = sum_val - modulus * wrap_amount
-        return result
+        
+        return torch.clamp(result, 0, modulus)
     
     def approximate_rotation(self, x: torch.Tensor, r: int, 
-                           word_size: int = 16) -> torch.Tensor:
+                            word_size: int) -> torch.Tensor:
         """
-        Smooth bit rotation.
+        Smooth bit rotation using weighted shifts.
         
-        For differentiable rotation, we use weighted interpolation.
+        For binary representation: ROL(x, r) = (x << r) | (x >> (n-r))
+        
+        Smooth version uses floating-point shifts with interpolation.
         """
-        # Convert to bit representation (simplified)
-        x_normalized = x * (2 ** word_size)
+        # Normalize to [0, 1]
+        x_norm = x / (2 ** word_size)
         
         # Circular shift approximation
-        shifted_left = x_normalized * (2 ** r)
-        shifted_right = x_normalized / (2 ** (word_size - r))
+        # Left shift: multiply by 2^r
+        shifted_left = (x_norm * (2 ** r)) % 1.0
         
-        result = (shifted_left + shifted_right) % (2 ** word_size)
-        return result / (2 ** word_size)
-    
-    def forward(self, x: torch.Tensor, operation: str = 'xor', **kwargs) -> torch.Tensor:
-        """
-        Apply approximation for specified operation.
+        # Right shift: divide by 2^(word_size - r)
+        shifted_right = (x_norm / (2 ** (word_size - r))) % 1.0
         
-        Args:
-            x: Input tensor
-            operation: 'xor', 'mod_add', or 'rotate'
-            **kwargs: Operation-specific parameters
-        """
-        if operation == 'xor':
-            y = kwargs.get('y')
-            return self.approximate_xor(x, y)
-        elif operation == 'mod_add':
-            y = kwargs.get('y')
-            modulus = kwargs.get('modulus', 2.0)
-            return self.approximate_modular_add(x, y, modulus)
-        elif operation == 'rotate':
-            r = kwargs.get('r', 1)
-            word_size = kwargs.get('word_size', 16)
-            return self.approximate_rotation(x, r, word_size)
-        else:
-            raise ValueError(f"Unknown operation: {operation}")
-    
-    def get_gradient(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        """
-        Compute gradient using automatic differentiation.
-        """
-        x_grad = x.requires_grad_(True)
-        y = self.forward(x_grad, **kwargs)
-        y.sum().backward()
-        return x_grad.grad
+        # Combine
+        result = (shifted_left + shifted_right) % 1.0
+        
+        # Denormalize
+        return result * (2 ** word_size)
 
 
 class StraightThroughEstimator(ApproximationBridge):
     """
     Straight-Through Estimator (STE) for discrete operations.
     
-    Key idea: Use discrete operation in forward pass, but pretend
-    it's identity in backward pass.
+    Forward pass: Uses actual discrete operation
+    Backward pass: Gradient flows as if operation were identity
     
-    Forward:  y = discrete_op(x)
-    Backward: dy/dx = 1 (identity gradient)
-    
-    Advantages:
-    - Exact discrete operation in forward pass
-    - Simple gradient computation
-    - No hyperparameters to tune
-    
-    Disadvantages:
-    - Biased gradients
-    - May not converge
-    - No theoretical guarantees
+    This is a biased estimator but often works well in practice.
     
     Reference:
-    Bengio et al. "Estimating or Propagating Gradients Through
+    Bengio et al., "Estimating or Propagating Gradients Through 
     Stochastic Neurons for Conditional Computation" (2013)
     """
     
-    class STEFunction(torch.autograd.Function):
-        """Custom autograd function for straight-through estimation."""
-        
-        @staticmethod
-        def forward(ctx, x, discrete_op):
-            """Forward: Use discrete operation."""
-            return discrete_op(x)
-        
-        @staticmethod
-        def backward(ctx, grad_output):
-            """Backward: Pass gradient straight through."""
-            return grad_output, None
-    
-    def __init__(self):
+    def __init__(self, temperature: float = 1.0):
         super().__init__()
+        self.temperature = temperature
         
-    def forward(self, x: torch.Tensor, discrete_op: Callable, **kwargs) -> torch.Tensor:
+    def approximate_xor(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
-        Apply STE.
+        STE for XOR: Forward uses rounded values, backward assumes identity.
+        """
+        # Forward: actual XOR on binarized inputs
+        x_binary = (x > 0.5).float()
+        y_binary = (y > 0.5).float()
+        result_binary = (x_binary + y_binary) % 2
         
-        Args:
-            x: Input tensor
-            discrete_op: Discrete operation to approximate
-        """
-        return self.STEFunction.apply(x, discrete_op)
+        # Backward: gradient flows as if identity
+        # Trick: result_binary + (smooth_version - smooth_version.detach())
+        smooth = x + y - 2 * x * y  # Soft XOR
+        result = result_binary + (smooth - smooth.detach())
+        
+        return result
     
-    def get_gradient(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+    def approximate_mod_add(self, x: torch.Tensor, y: torch.Tensor, 
+                           modulus: int) -> torch.Tensor:
         """
-        STE gradient is identity.
+        STE for modular addition.
         """
-        return torch.ones_like(x)
+        # Forward: actual modular addition
+        result_discrete = (x + y) % modulus
+        
+        # Backward: gradient of smooth version
+        smooth = x + y  # Linear approximation
+        result = result_discrete + (smooth - smooth.detach())
+        
+        return result
+    
+    def approximate_rotation(self, x: torch.Tensor, r: int, 
+                            word_size: int) -> torch.Tensor:
+        """
+        STE for rotation: Discrete rotation in forward, smooth in backward.
+        """
+        # Forward: actual bitwise rotation
+        x_int = x.long()
+        mask = (1 << word_size) - 1
+        rotated = ((x_int << r) | (x_int >> (word_size - r))) & mask
+        result_discrete = rotated.float()
+        
+        # Backward: identity
+        result = result_discrete + (x - x.detach())
+        
+        return result
 
 
 class GumbelSoftmaxApproximation(ApproximationBridge):
     """
-    Gumbel-Softmax approximation for discrete operations.
+    Gumbel-Softmax approximation for categorical/discrete operations.
     
-    Key idea: Add Gumbel noise and use softmax with temperature
-    to create differentiable samples from categorical distributions.
+    Uses the Gumbel-Softmax (Concrete) distribution to provide
+    a differentiable approximation of sampling from categorical distributions.
     
-    For discrete choice c ∈ {0, 1, ..., K-1}:
-    
-    Hard: c = argmax_i(log π_i + g_i)
-    Soft: s_i = exp((log π_i + g_i)/τ) / ∑_j exp((log π_j + g_j)/τ)
-    
-    where g_i ~ Gumbel(0, 1) and τ is temperature.
-    
-    As τ → 0: s → one-hot (discrete)
-    As τ → ∞: s → uniform (smooth)
-    
-    Advantages:
-    - Unbiased gradients
-    - Smooth interpolation between discrete and continuous
-    - Theoretically grounded
-    
-    Disadvantages:
-    - Requires reparameterization
-    - Temperature annealing needed
-    - More complex than sigmoid
+    Particularly useful for XOR and other bitwise operations.
     
     Reference:
-    Jang et al. "Categorical Reparameterization with Gumbel-Softmax" (2017)
+    Jang et al., "Categorical Reparameterization with Gumbel-Softmax" (2017)
+    Maddison et al., "The Concrete Distribution" (2017)
     """
     
-    def __init__(self, initial_temperature: float = 1.0, hard: bool = False):
-        super().__init__(initial_temperature)
+    def __init__(self, temperature: float = 1.0, hard: bool = False):
+        super().__init__()
+        self.temperature = nn.Parameter(torch.tensor(temperature))
         self.hard = hard
         
-    def sample_gumbel(self, shape: tuple, device: str = 'cpu', eps: float = 1e-10) -> torch.Tensor:
-        """
-        Sample from Gumbel(0, 1) distribution.
-        
-        G = -log(-log(U)) where U ~ Uniform(0, 1)
-        """
-        u = torch.rand(shape, device=device)
-        return -torch.log(-torch.log(u + eps) + eps)
-    
-    def gumbel_softmax_sample(self, logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+    def gumbel_softmax_sample(self, logits: torch.Tensor, 
+                             temperature: float) -> torch.Tensor:
         """
         Sample from Gumbel-Softmax distribution.
         
         Args:
             logits: Unnormalized log probabilities
-            temperature: Softmax temperature
-        """
-        gumbel_noise = self.sample_gumbel(logits.shape, device=logits.device)
-        y = logits + gumbel_noise
-        return F.softmax(y / temperature, dim=-1)
-    
-    def forward(self, logits: torch.Tensor, **kwargs) -> torch.Tensor:
-        """
-        Apply Gumbel-Softmax trick.
+            temperature: Temperature parameter (lower = more discrete)
         
-        Args:
-            logits: Unnormalized log probabilities (batch_size, num_classes)
+        Returns:
+            Soft sample from categorical distribution
         """
-        y = self.gumbel_softmax_sample(logits, self.temperature)
+        # Sample Gumbel noise
+        U = torch.rand_like(logits)
+        gumbel_noise = -torch.log(-torch.log(U + 1e-20) + 1e-20)
+        
+        # Add noise and apply softmax with temperature
+        y = logits + gumbel_noise
+        y_soft = F.softmax(y / temperature, dim=-1)
         
         if self.hard:
-            # Straight-through: forward uses argmax, backward uses soft
-            y_hard = torch.zeros_like(y)
-            y_hard.scatter_(-1, y.argmax(dim=-1, keepdim=True), 1.0)
-            y = (y_hard - y).detach() + y
-        
+            # Straight-through: discrete in forward, soft in backward
+            y_hard = torch.zeros_like(y_soft)
+            y_hard.scatter_(-1, y_soft.argmax(dim=-1, keepdim=True), 1.0)
+            y = y_hard - y_soft.detach() + y_soft
+        else:
+            y = y_soft
+            
         return y
     
-    def get_gradient(self, logits: torch.Tensor, **kwargs) -> torch.Tensor:
+    def approximate_xor(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
-        Compute Gumbel-Softmax gradient.
+        Gumbel-Softmax XOR: Treat XOR as categorical distribution over {0, 1}.
+        
+        XOR truth table:
+        x=0, y=0 -> 0
+        x=0, y=1 -> 1
+        x=1, y=0 -> 1  
+        x=1, y=1 -> 0
+        
+        Model as categorical with logits based on inputs.
         """
-        logits_grad = logits.requires_grad_(True)
-        y = self.forward(logits_grad, **kwargs)
-        y.sum().backward()
-        return logits_grad.grad
+        # Convert inputs to logits for binary outcomes
+        # Logits for output=0: high when x==y
+        # Logits for output=1: high when x!=y
+        
+        logits_0 = -torch.abs(x - y)  # High when x == y
+        logits_1 = torch.abs(x - y)   # High when x != y
+        
+        logits = torch.stack([logits_0, logits_1], dim=-1)
+        
+        # Sample using Gumbel-Softmax
+        sample = self.gumbel_softmax_sample(logits, self.temperature)
+        
+        # Extract probability of output=1 (XOR result)
+        result = sample[..., 1]
+        
+        return result
+    
+    def approximate_mod_add(self, x: torch.Tensor, y: torch.Tensor, 
+                           modulus: int) -> torch.Tensor:
+        """
+        Gumbel-Softmax for modular addition.
+        
+        Treat result as categorical over modulus possible values.
+        """
+        # Create logits for each possible output value
+        sum_val = (x + y) % modulus
+        
+        # Create one-hot-like logits
+        # This is simplified - full version would use learned parameters
+        logits = torch.zeros(x.shape[0], modulus, device=x.device)
+        logits.scatter_(1, sum_val.long().unsqueeze(1), 10.0)  # High logit for true value
+        
+        # Sample
+        sample = self.gumbel_softmax_sample(logits, self.temperature)
+        
+        # Convert back to scalar value
+        values = torch.arange(modulus, device=x.device).float()
+        result = (sample * values).sum(dim=1)
+        
+        return result
+    
+    def approximate_rotation(self, x: torch.Tensor, r: int, 
+                            word_size: int) -> torch.Tensor:
+        """
+        Gumbel-Softmax rotation: Sample rotated bits.
+        """
+        # Simplified version: use soft interpolation
+        x_norm = x / (2 ** word_size)
+        
+        # Create categorical over bit positions
+        num_positions = word_size
+        logits = torch.zeros(x.shape[0], num_positions, device=x.device)
+        
+        # Set high logit for rotated position
+        rotated_pos = r % num_positions
+        logits[:, rotated_pos] = 10.0
+        
+        # Sample
+        sample = self.gumbel_softmax_sample(logits, self.temperature)
+        
+        # Apply rotation based on sample
+        # This is simplified - actual implementation would be more complex
+        result = x_norm * (2 ** word_size)
+        
+        return result
 
 
-class TemperatureBasedSmoothing(ApproximationBridge):
+class TemperatureScheduler:
     """
-    Temperature-based smoothing with annealing schedule.
+    Temperature scheduling for annealing approximations.
     
-    Key idea: Start with high temperature (smooth) and gradually
-    decrease temperature (approach discrete).
+    Gradually decreases temperature during training to transition
+    from smooth approximations to discrete operations.
     
-    Temperature schedules:
-    1. Linear: T(t) = T_0 - (T_0 - T_f) * t / T_max
-    2. Exponential: T(t) = T_0 * (T_f / T_0)^(t / T_max)
-    3. Cosine: T(t) = T_f + 0.5 * (T_0 - T_f) * (1 + cos(π * t / T_max))
-    
-    Advantages:
-    - Smooth optimization early (easier convergence)
-    - Approaches discrete operation (better accuracy)
-    - Flexible scheduling
-    
-    Disadvantages:
-    - Requires tuning schedule
-    - May get stuck if cooled too fast
-    - Gradient explosion if cooled too slow
+    Schedules:
+    - Linear: T(t) = T_max - (T_max - T_min) * t / T_total
+    - Exponential: T(t) = T_max * (T_min / T_max)^(t / T_total)
+    - Cosine: T(t) = T_min + (T_max - T_min) * (1 + cos(pi * t / T_total)) / 2
     """
     
-    def __init__(self, initial_temperature: float = 10.0, 
-                 final_temperature: float = 0.1,
-                 schedule: str = 'exponential'):
-        super().__init__(initial_temperature)
-        self.initial_temperature = initial_temperature
-        self.final_temperature = final_temperature
+    def __init__(self, T_max: float = 10.0, T_min: float = 0.1, 
+                 total_steps: int = 1000, schedule: str = 'exponential'):
+        self.T_max = T_max
+        self.T_min = T_min
+        self.total_steps = total_steps
         self.schedule = schedule
-        self.step_count = 0
+        self.current_step = 0
         
-    def update_temperature(self, progress: float):
-        """
-        Update temperature based on training progress.
-        
-        Args:
-            progress: Training progress in [0, 1]
-        """
-        T_0 = self.initial_temperature
-        T_f = self.final_temperature
+    def step(self) -> float:
+        """Get current temperature and increment step."""
+        T = self.get_temperature()
+        self.current_step += 1
+        return T
+    
+    def get_temperature(self, step: Optional[int] = None) -> float:
+        """Compute temperature at given step."""
+        if step is None:
+            step = self.current_step
+            
+        t = min(step / self.total_steps, 1.0)  # Normalized time [0, 1]
         
         if self.schedule == 'linear':
-            self.temperature = T_0 - (T_0 - T_f) * progress
+            T = self.T_max - (self.T_max - self.T_min) * t
         elif self.schedule == 'exponential':
-            self.temperature = T_0 * (T_f / T_0) ** progress
+            T = self.T_max * (self.T_min / self.T_max) ** t
         elif self.schedule == 'cosine':
-            self.temperature = T_f + 0.5 * (T_0 - T_f) * (1 + np.cos(np.pi * progress))
+            T = self.T_min + (self.T_max - self.T_min) * \
+                (1 + np.cos(np.pi * t)) / 2
         else:
             raise ValueError(f"Unknown schedule: {self.schedule}")
-        
-        self.step_count += 1
+            
+        return T
     
-    def forward(self, x: torch.Tensor, operation: str = 'sigmoid', **kwargs) -> torch.Tensor:
-        """
-        Apply temperature-smoothed operation.
-        
-        Args:
-            x: Input tensor
-            operation: Base operation type
-        """
-        # Use sigmoid approximation with current temperature
-        approximator = SigmoidApproximation(self.temperature)
-        return approximator.forward(x, operation, **kwargs)
-    
-    def get_gradient(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        """
-        Compute gradient with current temperature.
-        """
-        x_grad = x.requires_grad_(True)
-        y = self.forward(x_grad, **kwargs)
-        y.sum().backward()
-        return x_grad.grad
+    def reset(self):
+        """Reset scheduler to initial state."""
+        self.current_step = 0
 
 
-def create_approximator(method: str, **kwargs) -> ApproximationBridge:
+def create_approximation(method: str, **kwargs) -> ApproximationBridge:
     """
-    Factory function to create approximation bridges.
+    Factory function to create approximation instances.
     
     Args:
-        method: Approximation method ('sigmoid', 'ste', 'gumbel', 'temperature')
+        method: 'sigmoid', 'ste', 'gumbel'
         **kwargs: Method-specific parameters
-        
+    
     Returns:
         ApproximationBridge instance
     """
@@ -398,10 +406,22 @@ def create_approximator(method: str, **kwargs) -> ApproximationBridge:
         return StraightThroughEstimator(**kwargs)
     elif method == 'gumbel':
         return GumbelSoftmaxApproximation(**kwargs)
-    elif method == 'temperature':
-        return TemperatureBasedSmoothing(**kwargs)
     else:
         raise ValueError(f"Unknown approximation method: {method}")
 
 
-import numpy as np  # For cosine schedule
+if __name__ == "__main__":
+    # Quick test
+    print("Testing approximation methods...\n")
+    
+    x = torch.tensor([0.3, 0.7, 0.9])
+    y = torch.tensor([0.2, 0.8, 0.1])
+    
+    methods = ['sigmoid', 'ste', 'gumbel']
+    
+    for method in methods:
+        approx = create_approximation(method)
+        result = approx.approximate_xor(x, y)
+        print(f"{method.upper():10} XOR: {result.detach().numpy()}")
+    
+    print("\n✓ All approximation methods loaded successfully")

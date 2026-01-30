@@ -1,38 +1,33 @@
 """
-Theory Module for GradientDetachment
+Theoretical Analysis Module
 
-This module provides rigorous mathematical analysis of the gradient inversion
-phenomenon in ARX ciphers, including formal theorems, proofs, and information-
-theoretic analysis.
+Provides mathematical foundations and formal proofs for gradient inversion
+phenomena in ARX ciphers.
 """
 
 from .mathematical_analysis import (
-    ARXGradientAnalyzer,
     SawtoothTopologyAnalyzer,
+    GradientInversionAnalyzer,
     InformationTheoreticAnalyzer,
-    compute_gradient_norm,
-    compute_hessian_eigenvalues,
-    analyze_loss_landscape_curvature
+    ARXMathematicalFramework
 )
 
 from .theorems import (
     GradientInversionTheorem,
-    SawtoothLandscapeTheorem,
-    InformationBottleneckTheorem,
-    CriticalPointTheorem,
-    verify_all_theorems
+    SawtoothConvergenceTheorem,
+    InformationLeakageTheorem,
+    ModularArithmeticLemma,
+    prove_all_theorems
 )
 
 __all__ = [
-    'ARXGradientAnalyzer',
     'SawtoothTopologyAnalyzer',
+    'GradientInversionAnalyzer',
     'InformationTheoreticAnalyzer',
+    'ARXMathematicalFramework',
     'GradientInversionTheorem',
-    'SawtoothLandscapeTheorem',
-    'InformationBottleneckTheorem',
-    'CriticalPointTheorem',
-    'compute_gradient_norm',
-    'compute_hessian_eigenvalues',
-    'analyze_loss_landscape_curvature',
-    'verify_all_theorems'
+    'SawtoothConvergenceTheorem',
+    'InformationLeakageTheorem',
+    'ModularArithmeticLemma',
+    'prove_all_theorems'
 ]

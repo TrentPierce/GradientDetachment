@@ -2,8 +2,12 @@
 """
 Approximation Analysis Experiment
 
-This script compares different approximation methods for discrete operations
-and demonstrates their impact on gradient flow and convergence.
+Comprehensive comparison of different approximation methods for discrete
+ARX operations, including:
+1. Error analysis
+2. Gradient fidelity
+3. Convergence properties
+4. Information preservation
 """
 
 import sys
@@ -11,6 +15,8 @@ import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+from typing import Dict
+import json
 from datetime import datetime
 
 # Add src to path
@@ -20,364 +26,459 @@ from ctdma.approximation.bridge import (
     SigmoidApproximation,
     StraightThroughEstimator,
     GumbelSoftmaxApproximation,
-    TemperatureSmoothing,
-    compare_approximations
+    TemperatureAnnealing
 )
 from ctdma.approximation.metrics import (
-    compute_fidelity,
-    compute_gradient_similarity,
-    compute_discrete_error
+    ApproximationMetrics,
+    compare_approximation_methods
 )
 from ctdma.approximation.convergence import (
     ConvergenceAnalyzer,
-    analyze_temperature_schedule,
-    measure_approximation_quality
+    compare_convergence_properties
+)
+from ctdma.theory.mathematical_analysis import (
+    GradientInversionAnalyzer,
+    InformationTheoreticAnalyzer
 )
 
 
-def discrete_modular_add(x: torch.Tensor, y: torch.Tensor, 
-                        modulus: int = 2**16) -> torch.Tensor:
-    """Discrete modular addition for comparison."""
+def create_approximation_methods(n_bits=16, device='cpu'):
+    """Create all approximation methods for comparison."""
+    methods = {
+        'sigmoid_steep_5': SigmoidApproximation(n_bits, steepness=5.0, operation='modadd').to(device),
+        'sigmoid_steep_10': SigmoidApproximation(n_bits, steepness=10.0, operation='modadd').to(device),
+        'sigmoid_steep_20': SigmoidApproximation(n_bits, steepness=20.0, operation='modadd').to(device),
+        'straight_through': StraightThroughEstimator(n_bits, operation='modadd').to(device),
+        'gumbel_temp_0.5': GumbelSoftmaxApproximation(n_bits, temperature=0.5, operation='modadd').to(device),
+        'gumbel_temp_1.0': GumbelSoftmaxApproximation(n_bits, temperature=1.0, operation='modadd').to(device),
+        'temp_anneal': TemperatureAnnealing(n_bits, initial_temperature=1.0, operation='modadd').to(device),
+    }
+    return methods
+
+
+def discrete_modadd(x, y, modulus=2**16):
+    """Exact discrete modular addition."""
     return (x + y) % modulus
 
 
-def discrete_xor(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """Discrete XOR operation."""
-    x_binary = (x > 0.5).float()
-    y_binary = (y > 0.5).float()
-    return (x_binary + y_binary) % 2
-
-
-def run_basic_comparison():
-    """Compare all approximation methods on basic operations."""
-    print("=" * 80)
-    print("EXPERIMENT 1: Basic Approximation Comparison")
-    print("=" * 80)
+def experiment_1_error_analysis(device='cpu', n_samples=1000):
+    """
+    Experiment 1: Compare approximation errors across methods.
+    """
+    print("\n" + "="*70)
+    print("EXPERIMENT 1: Approximation Error Analysis")
+    print("="*70)
     
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Device: {device}\n")
+    n_bits = 16
+    modulus = 2 ** n_bits
+    
+    # Create approximation methods
+    methods = create_approximation_methods(n_bits, device)
     
     # Generate test data
-    num_samples = 100
-    x = torch.rand(num_samples, device=device)
-    y = torch.rand(num_samples, device=device)
+    x = torch.rand(n_samples, device=device) * modulus
+    y = torch.rand(n_samples, device=device) * modulus
     
-    # Test modular addition
-    print("Testing Modular Addition (x + y) mod 2")
-    print("-" * 40)
+    # Compute discrete output
+    discrete_output = discrete_modadd(x, y, modulus)
     
-    results = compare_approximations(x, y, discrete_xor, device=device)
-    
-    for method, metrics in results.items():
-        print(f"\n{method}:")
-        print(f"  Forward Error: {metrics['error']:.6f}")
-        print(f"  Gradient Mean: {metrics['gradient_mean']:.6f}")
-        print(f"  Gradient Std:  {metrics['gradient_std']:.6f}")
-        print(f"  Correlation:   {metrics['output_correlation']:.4f}")
-    
-    return results
-
-
-def run_steepness_analysis():
-    """Analyze effect of sigmoid steepness on approximation quality."""
-    print("\n" + "=" * 80)
-    print("EXPERIMENT 2: Steepness Parameter Analysis")
-    print("=" * 80)
-    
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # Test data
-    x = torch.rand(100, device=device)
-    y = torch.rand(100, device=device)
-    
-    # Test different steepness values
-    steepness_values = [1.0, 5.0, 10.0, 20.0, 50.0]
-    
-    print(f"\nTesting steepness values: {steepness_values}")
-    print("-" * 40)
+    # Compare all methods
+    print(f"\nComparing {len(methods)} approximation methods on {n_samples} samples...")
+    print(f"Input range: [0, {modulus})")
     
     results = {}
-    for k in steepness_values:
-        approx = SigmoidApproximation(
-            discrete_xor,
-            steepness=k,
-            operation_type='xor',
-            device=device
-        )
+    metrics_calculator = ApproximationMetrics(n_bits)
+    
+    for name, method in methods.items():
+        with torch.no_grad():
+            approx_output = method(x, y)
         
         # Compute metrics
-        error = approx.get_approximation_error(x, y)
-        gradient = approx.get_gradient_estimate(x, y)
+        error_metrics = metrics_calculator.compute_approximation_error(
+            discrete_output,
+            approx_output
+        )
         
-        results[k] = {
-            'error': error,
-            'grad_mean': gradient.mean().item(),
-            'grad_std': gradient.std().item(),
-            'grad_max': gradient.abs().max().item()
+        info_metrics = metrics_calculator.compute_information_preservation(
+            discrete_output,
+            approx_output
+        )
+        
+        boundary_metrics = metrics_calculator.compute_boundary_metrics(
+            x, y, discrete_output, approx_output
+        )
+        
+        results[name] = {
+            **error_metrics,
+            **info_metrics,
+            **boundary_metrics
         }
         
-        print(f"\nSteepness k={k}:")
-        print(f"  Forward Error:     {error:.6f}")
-        print(f"  Gradient Mean:     {results[k]['grad_mean']:.6f}")
-        print(f"  Gradient Std:      {results[k]['grad_std']:.6f}")
-        print(f"  Max Gradient:      {results[k]['grad_max']:.6f}")
-    
-    # Plot results
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    
-    errors = [results[k]['error'] for k in steepness_values]
-    grad_stds = [results[k]['grad_std'] for k in steepness_values]
-    
-    axes[0].plot(steepness_values, errors, 'o-')
-    axes[0].set_xlabel('Steepness (k)')
-    axes[0].set_ylabel('Forward Error')
-    axes[0].set_title('Approximation Error vs Steepness')
-    axes[0].set_xscale('log')
-    axes[0].set_yscale('log')
-    axes[0].grid(True, alpha=0.3)
-    
-    axes[1].plot(steepness_values, grad_stds, 'o-', color='red')
-    axes[1].set_xlabel('Steepness (k)')
-    axes[1].set_ylabel('Gradient Std Dev')
-    axes[1].set_title('Gradient Stability vs Steepness')
-    axes[1].set_xscale('log')
-    axes[1].set_yscale('log')
-    axes[1].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f'steepness_analysis_{timestamp}.png'
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
-    print(f"\nFigure saved: {filename}")
+        # Print summary
+        print(f"\n{name}:")
+        print(f"  L1 Error: {error_metrics['l1_error']:.4f}")
+        print(f"  L2 Error: {error_metrics['l2_error']:.4f}")
+        print(f"  Correlation: {error_metrics['correlation']:.4f}")
+        print(f"  Info Preservation: {info_metrics['information_preservation_ratio']:.4f}")
+        print(f"  Boundary Error Amp: {boundary_metrics['boundary_error_amplification']:.2f}x")
     
     return results
 
 
-def run_convergence_analysis():
-    """Analyze convergence properties of different approximations."""
-    print("\n" + "=" * 80)
-    print("EXPERIMENT 3: Convergence Analysis")
-    print("=" * 80)
+def experiment_2_gradient_fidelity(device='cpu', n_samples=100):
+    """
+    Experiment 2: Analyze gradient fidelity.
+    """
+    print("\n" + "="*70)
+    print("EXPERIMENT 2: Gradient Fidelity Analysis")
+    print("="*70)
     
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    n_bits = 16
+    modulus = 2 ** n_bits
     
-    # Setup optimization problem
-    x_init = torch.tensor([0.3], device=device, requires_grad=True)
-    y = torch.tensor([0.4], device=device)
-    target = torch.tensor([0.7], device=device)
+    methods = create_approximation_methods(n_bits, device)
     
-    methods = {
-        'Sigmoid (k=5)': SigmoidApproximation(discrete_xor, steepness=5.0, 
-                                              operation_type='xor', device=device),
-        'Sigmoid (k=10)': SigmoidApproximation(discrete_xor, steepness=10.0,
-                                               operation_type='xor', device=device),
-        'Sigmoid (k=20)': SigmoidApproximation(discrete_xor, steepness=20.0,
-                                               operation_type='xor', device=device),
-    }
+    # Generate test data (requires grad)
+    x = torch.rand(n_samples, device=device, requires_grad=True) * modulus
+    y = torch.rand(n_samples, device=device, requires_grad=True) * modulus
     
-    print("\nOptimization problem: min_x ||approx(x, 0.4) - 0.7||²")
-    print("Initial x: 0.3, Learning rate: 0.01")
-    print("-" * 40)
+    # Target (for loss computation)
+    with torch.no_grad():
+        target = discrete_modadd(x, y, modulus)
     
     results = {}
-    for name, approx_method in methods.items():
-        print(f"\nTesting: {name}")
+    metrics_calculator = ApproximationMetrics(n_bits)
+    
+    for name, method in methods.items():
+        # Forward pass
+        output = method(x, y)
         
-        analyzer = ConvergenceAnalyzer(
-            approx_method.forward,
-            discrete_xor,
-            device=device
+        # Compute loss
+        loss = torch.nn.functional.mse_loss(output, target)
+        
+        # Backward pass
+        if x.grad is not None:
+            x.grad.zero_()
+        loss.backward()
+        
+        grad_x = x.grad.clone()
+        
+        # Compute gradient metrics (compare to numerical gradient)
+        with torch.no_grad():
+            delta = 1e-4
+            x_plus = x.detach() + delta
+            output_plus = method(x_plus, y.detach())
+            numerical_grad = (output_plus - output.detach()) / delta
+        
+        grad_metrics = metrics_calculator.compute_gradient_fidelity(
+            numerical_grad,
+            grad_x
         )
         
-        metrics = analyzer.analyze_convergence_trajectory(
-            x_init=x_init.clone().detach(),
-            y=y,
-            target=target,
-            learning_rate=0.01,
-            num_steps=500
-        )
+        results[name] = grad_metrics
         
-        results[name] = metrics
-        
-        print(f"  Convergence Time: {metrics.convergence_time} steps")
-        print(f"  Final Loss: {metrics.final_loss:.6f}")
-        print(f"  Gradient Variance: {metrics.gradient_variance:.6f}")
+        print(f"\n{name}:")
+        print(f"  Cosine Similarity: {grad_metrics['gradient_cosine_similarity']:.4f}")
+        print(f"  Sign Agreement: {grad_metrics['gradient_sign_agreement']:.4f}")
+        print(f"  Angular Error: {grad_metrics['gradient_angular_error_deg']:.2f}°")
     
     return results
 
 
-def run_temperature_schedule_analysis():
-    """Analyze different temperature annealing schedules."""
-    print("\n" + "=" * 80)
-    print("EXPERIMENT 4: Temperature Schedule Analysis")
-    print("=" * 80)
+def experiment_3_convergence_analysis(device='cpu'):
+    """
+    Experiment 3: Analyze convergence properties with temperature annealing.
+    """
+    print("\n" + "="*70)
+    print("EXPERIMENT 3: Convergence Analysis")
+    print("="*70)
     
-    num_steps = 1000
-    schedules = ['exponential', 'linear', 'cosine', 'step']
+    n_bits = 16
+    modulus = 2 ** n_bits
     
-    print(f"\nAnalyzing temperature schedules over {num_steps} steps")
-    print("Initial temperature: 10.0, Final temperature: 0.1")
-    print("-" * 40)
+    analyzer = ConvergenceAnalyzer(tolerance=1e-3, max_iterations=200)
     
-    # Generate schedules
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    axes = axes.flatten()
+    # Test sigmoid with different steepness schedules
+    def sigmoid_approx(x, y, beta):
+        sum_val = x + y
+        wrap = torch.sigmoid(beta * (sum_val - modulus))
+        return sum_val - modulus * wrap
     
-    for idx, schedule_type in enumerate(schedules):
-        temps = analyze_temperature_schedule(
-            initial_temp=10.0,
-            final_temp=0.1,
-            num_steps=num_steps,
-            schedule_type=schedule_type
+    def discrete_op(x, y):
+        return (x + y) % modulus
+    
+    def input_generator(n):
+        inputs = []
+        for _ in range(n):
+            x = torch.rand(1, device=device) * modulus
+            y = torch.rand(1, device=device) * modulus
+            inputs.append((x, y))
+        return inputs
+    
+    # Analyze different annealing schedules
+    schedules = {
+        'exponential': 'exponential',
+        'linear': 'linear',
+        'cosine': 'cosine'
+    }
+    
+    results = {}
+    for schedule_name, schedule_type in schedules.items():
+        print(f"\nAnalyzing {schedule_name} annealing...")
+        
+        anneal_results = analyzer.analyze_temperature_annealing(
+            sigmoid_approx,
+            discrete_op,
+            input_generator,
+            initial_temp=20.0,
+            final_temp=0.5,
+            n_steps=200,
+            anneal_schedule=schedule_type
         )
         
-        axes[idx].plot(temps)
-        axes[idx].set_xlabel('Training Step')
-        axes[idx].set_ylabel('Temperature')
-        axes[idx].set_title(f'{schedule_type.capitalize()} Schedule')
-        axes[idx].grid(True, alpha=0.3)
-        axes[idx].set_ylim([0, 11])
+        conv_results = anneal_results['convergence_results']
         
-        print(f"\n{schedule_type.capitalize()} Schedule:")
-        print(f"  Initial temp: {temps[0]:.2f}")
-        print(f"  Final temp: {temps[-1]:.2f}")
-        print(f"  Mean temp: {temps.mean():.2f}")
-        print(f"  Median temp: {np.median(temps):.2f}")
+        print(f"  Converged: {conv_results.converged}")
+        print(f"  Iterations: {conv_results.iterations_to_converge}")
+        print(f"  Final Error: {conv_results.final_error:.6f}")
+        print(f"  Convergence Rate: {conv_results.convergence_rate:.6f}")
+        
+        results[schedule_name] = anneal_results
     
-    plt.tight_layout()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f'temperature_schedules_{timestamp}.png'
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
-    print(f"\nFigure saved: {filename}")
+    return results
 
 
-def run_gradient_inversion_demonstration():
-    """Demonstrate gradient inversion phenomenon."""
-    print("\n" + "=" * 80)
-    print("EXPERIMENT 5: Gradient Inversion Demonstration")
-    print("=" * 80)
+def experiment_4_information_theory(device='cpu', n_samples=1000):
+    """
+    Experiment 4: Information-theoretic analysis.
+    """
+    print("\n" + "="*70)
+    print("EXPERIMENT 4: Information-Theoretic Analysis")
+    print("="*70)
     
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    n_bits = 16
+    modulus = 2 ** n_bits
     
-    # Create input near modular boundary
-    modulus = 2.0
-    x = torch.linspace(0, 2 * modulus, 200, device=device)
-    y = torch.ones_like(x) * 0.5
+    analyzer = InformationTheoreticAnalyzer(n_bits)
     
-    # Test different steepness values
-    steepness_values = [5.0, 10.0, 20.0, 50.0]
+    # Generate samples
+    x = torch.rand(n_samples, device=device) * modulus
+    y = torch.rand(n_samples, device=device) * modulus
     
-    print("\nAnalyzing gradients near modular boundary")
-    print("Modulus: 2.0, Second input: 0.5")
-    print("-" * 40)
+    # Discrete operation
+    discrete_output = discrete_modadd(x, y, modulus)
     
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    axes = axes.flatten()
+    # Test different approximations
+    methods = create_approximation_methods(n_bits, device)
     
-    for idx, k in enumerate(steepness_values):
-        # Sigmoid approximation
-        sigmoid = lambda z: torch.sigmoid(z)
-        x_var = x.clone().requires_grad_(True)
-        smooth_output = x_var + y - modulus * sigmoid(k * (x_var + y - modulus))
+    results = {}
+    for name, method in methods.items():
+        with torch.no_grad():
+            approx_output = method(x, y)
         
-        # Compute gradient
-        gradients = []
-        for i in range(len(x)):
-            grad = torch.autograd.grad(smooth_output[i], x_var, retain_graph=True)[0]
-            gradients.append(grad[i].item())
+        # Information metrics
+        info_metrics = analyzer.analyze_information_loss_in_approximation(
+            lambda inp: discrete_modadd(inp[:, 0], inp[:, 1], modulus),
+            lambda inp: method(inp[:, 0], inp[:, 1]),
+            torch.stack([x, y], dim=1)
+        )
         
-        gradients = np.array(gradients)
+        results[name] = info_metrics
         
-        # Plot
-        axes[idx].axvline(x=modulus, color='red', linestyle='--', 
-                         alpha=0.5, label='Boundary')
-        axes[idx].plot(x.cpu().numpy(), gradients, 'b-', linewidth=2)
-        axes[idx].axhline(y=0, color='black', linestyle='-', alpha=0.3)
-        axes[idx].set_xlabel('Input Value (x)')
-        axes[idx].set_ylabel('Gradient (∂f/∂x)')
-        axes[idx].set_title(f'Steepness k = {k}')
-        axes[idx].grid(True, alpha=0.3)
-        axes[idx].legend()
-        
-        # Report statistics
-        boundary_idx = int(len(x) * 0.5)
-        boundary_grad = gradients[boundary_idx]
-        inversion_count = np.sum(gradients < 0)
-        
-        print(f"\nSteepness k={k}:")
-        print(f"  Gradient at boundary: {boundary_grad:.4f}")
-        print(f"  Negative gradients: {inversion_count}/{len(gradients)}")
-        print(f"  Min gradient: {gradients.min():.4f}")
-        print(f"  Max gradient: {gradients.max():.4f}")
+        print(f"\n{name}:")
+        print(f"  Entropy Discrete: {info_metrics['entropy_discrete']:.4f}")
+        print(f"  Entropy Smooth: {info_metrics['entropy_smooth']:.4f}")
+        print(f"  Information Loss: {info_metrics['information_loss']:.4f}")
+        print(f"  Relative Loss: {info_metrics['relative_information_loss']:.2%}")
     
-    plt.tight_layout()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f'gradient_inversion_{timestamp}.png'
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
-    print(f"\nFigure saved: {filename}")
+    return results
 
 
-def run_full_analysis():
+def experiment_5_gradient_inversion_probability(device='cpu', n_samples=1000):
+    """
+    Experiment 5: Measure actual gradient inversion probability.
+    """
+    print("\n" + "="*70)
+    print("EXPERIMENT 5: Gradient Inversion Probability")
+    print("="*70)
+    
+    n_bits = 16
+    modulus = 2 ** n_bits
+    
+    analyzer = GradientInversionAnalyzer(n_bits, modulus)
+    
+    # Generate samples
+    x = torch.rand(n_samples, device=device) * modulus
+    y = torch.rand(n_samples, device=device) * modulus
+    
+    # Analyze discontinuities
+    discontinuity_results = analyzer.compute_gradient_discontinuity(x, y, 'modadd')
+    
+    print(f"\nGradient Discontinuity Analysis:")
+    print(f"  Wrap Frequency: {discontinuity_results['wrap_frequency']:.4f}")
+    print(f"  Gradient Jump Magnitude: {discontinuity_results['gradient_magnitude_jump']:.4f}")
+    print(f"  Inversion Probability: {discontinuity_results['inversion_probability']:.4f}")
+    
+    # Theoretical prediction
+    noise_variance = float(discontinuity_results['gradient_magnitude_jump']) ** 2
+    signal_strength = 1.0  # Typical gradient magnitude
+    
+    theoretical_prob = analyzer.theoretical_inversion_probability(
+        noise_variance,
+        signal_strength
+    )
+    
+    print(f"  Theoretical Inversion Prob: {theoretical_prob:.4f}")
+    
+    return discontinuity_results
+
+
+def create_visualizations(all_results, output_dir='results'):
+    """Create visualization plots."""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Plot 1: Error comparison
+    if 'error_analysis' in all_results:
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        fig.suptitle('Approximation Error Analysis', fontsize=14, fontweight='bold')
+        
+        methods = list(all_results['error_analysis'].keys())
+        
+        # L1 errors
+        l1_errors = [all_results['error_analysis'][m]['l1_error'] for m in methods]
+        axes[0, 0].bar(range(len(methods)), l1_errors)
+        axes[0, 0].set_xticks(range(len(methods)))
+        axes[0, 0].set_xticklabels(methods, rotation=45, ha='right')
+        axes[0, 0].set_ylabel('L1 Error')
+        axes[0, 0].set_title('L1 Approximation Error')
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # Information preservation
+        info_pres = [all_results['error_analysis'][m]['information_preservation_ratio'] for m in methods]
+        axes[0, 1].bar(range(len(methods)), info_pres)
+        axes[0, 1].set_xticks(range(len(methods)))
+        axes[0, 1].set_xticklabels(methods, rotation=45, ha='right')
+        axes[0, 1].set_ylabel('Information Preservation Ratio')
+        axes[0, 1].set_title('Information Preservation')
+        axes[0, 1].axhline(y=1.0, color='r', linestyle='--', label='Perfect')
+        axes[0, 1].legend()
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # Boundary error amplification
+        boundary_amp = [all_results['error_analysis'][m]['boundary_error_amplification'] for m in methods]
+        axes[1, 0].bar(range(len(methods)), boundary_amp)
+        axes[1, 0].set_xticks(range(len(methods)))
+        axes[1, 0].set_xticklabels(methods, rotation=45, ha='right')
+        axes[1, 0].set_ylabel('Amplification Factor')
+        axes[1, 0].set_title('Boundary Error Amplification')
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        # Correlation
+        correlation = [all_results['error_analysis'][m]['correlation'] for m in methods]
+        axes[1, 1].bar(range(len(methods)), correlation)
+        axes[1, 1].set_xticks(range(len(methods)))
+        axes[1, 1].set_xticklabels(methods, rotation=45, ha='right')
+        axes[1, 1].set_ylabel('Correlation')
+        axes[1, 1].set_title('Output Correlation')
+        axes[1, 1].axhline(y=1.0, color='r', linestyle='--', label='Perfect')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'error_analysis.png'), dpi=300, bbox_inches='tight')
+        print(f"\nSaved: {output_dir}/error_analysis.png")
+        plt.close()
+    
+    # Plot 2: Gradient fidelity
+    if 'gradient_fidelity' in all_results:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        fig.suptitle('Gradient Fidelity Analysis', fontsize=14, fontweight='bold')
+        
+        methods = list(all_results['gradient_fidelity'].keys())
+        
+        # Cosine similarity
+        cos_sim = [all_results['gradient_fidelity'][m]['gradient_cosine_similarity'] for m in methods]
+        axes[0].bar(range(len(methods)), cos_sim)
+        axes[0].set_xticks(range(len(methods)))
+        axes[0].set_xticklabels(methods, rotation=45, ha='right')
+        axes[0].set_ylabel('Cosine Similarity')
+        axes[0].set_title('Gradient Direction Fidelity')
+        axes[0].axhline(y=1.0, color='r', linestyle='--', label='Perfect')
+        axes[0].axhline(y=0.0, color='k', linestyle=':', alpha=0.5)
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+        
+        # Sign agreement
+        sign_agree = [all_results['gradient_fidelity'][m]['gradient_sign_agreement'] for m in methods]
+        axes[1].bar(range(len(methods)), sign_agree)
+        axes[1].set_xticks(range(len(methods)))
+        axes[1].set_xticklabels(methods, rotation=45, ha='right')
+        axes[1].set_ylabel('Sign Agreement')
+        axes[1].set_title('Gradient Sign Agreement')
+        axes[1].axhline(y=1.0, color='r', linestyle='--', label='Perfect')
+        axes[1].axhline(y=0.5, color='orange', linestyle='--', label='Random')
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'gradient_fidelity.png'), dpi=300, bbox_inches='tight')
+        print(f"Saved: {output_dir}/gradient_fidelity.png")
+        plt.close()
+
+
+def main():
     """Run all experiments."""
-    print("\n" + "=" * 80)
-    print("APPROXIMATION BRIDGING: COMPREHENSIVE ANALYSIS")
-    print("=" * 80)
-    print("\nThis analysis compares different approximation methods for")
-    print("discrete cryptographic operations and their effect on gradient flow.\n")
+    print("="*70)
+    print("APPROXIMATION ANALYSIS - COMPREHENSIVE EVALUATION")
+    print("="*70)
+    print("\nComparing multiple approximation techniques for discrete ARX operations")
+    print("Methods: Sigmoid, Straight-Through, Gumbel-Softmax, Temperature Annealing")
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"\nDevice: {device}")
+    
+    all_results = {}
     
     # Run experiments
-    exp1_results = run_basic_comparison()
-    exp2_results = run_steepness_analysis()
-    exp3_results = run_convergence_analysis()
-    run_temperature_schedule_analysis()
-    run_gradient_inversion_demonstration()
+    all_results['error_analysis'] = experiment_1_error_analysis(device)
+    all_results['gradient_fidelity'] = experiment_2_gradient_fidelity(device)
+    all_results['convergence'] = experiment_3_convergence_analysis(device)
+    all_results['information_theory'] = experiment_4_information_theory(device)
+    all_results['gradient_inversion'] = experiment_5_gradient_inversion_probability(device)
     
-    # Summary
-    print("\n" + "=" * 80)
-    print("SUMMARY AND CONCLUSIONS")
-    print("=" * 80)
+    # Create visualizations
+    print("\n" + "="*70)
+    print("Creating visualizations...")
+    print("="*70)
+    create_visualizations(all_results)
     
-    print("""
-Key Findings:
--------------
-
-1. APPROXIMATION QUALITY TRADE-OFF:
-   - Low steepness (k≈5): Smooth gradients but high forward error
-   - High steepness (k≈50): Low forward error but gradient instability
-   - Optimal: k≈10-20 balances accuracy and gradient flow
-
-2. GRADIENT INVERSION:
-   - Occurs near modular boundaries for all sigmoid-based methods
-   - Severity increases with steepness parameter
-   - Causes ~50% of gradients to point in wrong direction
-
-3. CONVERGENCE BEHAVIOR:
-   - STE: Fast convergence but biased gradients
-   - Sigmoid: Stable but may converge to inverted solutions
-   - Temperature annealing: Best of both worlds (start smooth, end accurate)
-   - Gumbel-Softmax: Good for categorical operations
-
-4. RECOMMENDATIONS:
-   - For ARX cryptanalysis: Use temperature annealing (exponential schedule)
-   - Start with high temperature (smooth gradients)
-   - Gradually decrease to improve discrete fidelity
-   - Monitor for gradient inversion using diagnostic tools
-
-5. THEORETICAL IMPLICATIONS:
-   - Gradient inversion is FUNDAMENTAL to modular arithmetic
-   - Cannot be eliminated by changing approximation method
-   - Validates that ARX ciphers are inherently resistant to gradient-based attacks
-    """)
+    # Save results
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = f"approximation_analysis_{timestamp}.json"
     
-    print("=" * 80)
-    print("Analysis complete! Check generated PNG files for visualizations.")
-    print("=" * 80)
+    # Convert tensors to lists for JSON serialization
+    def convert_to_serializable(obj):
+        if isinstance(obj, torch.Tensor):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: convert_to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [convert_to_serializable(item) for item in obj]
+        else:
+            return obj
+    
+    serializable_results = convert_to_serializable(all_results)
+    
+    with open(output_file, 'w') as f:
+        json.dump(serializable_results, f, indent=2)
+    
+    print(f"\nResults saved to: {output_file}")
+    print("\n" + "="*70)
+    print("ANALYSIS COMPLETE")
+    print("="*70)
+    
+    return all_results
 
 
 if __name__ == "__main__":
-    # Set random seeds for reproducibility
-    torch.manual_seed(42)
-    np.random.seed(42)
-    
-    # Run full analysis
-    run_full_analysis()
+    results = main()

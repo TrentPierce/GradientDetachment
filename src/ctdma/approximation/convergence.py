@@ -1,468 +1,401 @@
 """
-Convergence Property Analysis for Approximation Methods
+Convergence Analysis Module
 
-This module analyzes how approximation precision affects gradient flow
-and convergence properties during optimization.
+Analyzes convergence properties of different approximation methods,
+including bias, variance, and convergence rates.
 """
 
 import torch
 import numpy as np
-from typing import Callable, List, Dict, Tuple
+from typing import Dict, List, Tuple, Callable, Optional
+from scipy import stats
 from dataclasses import dataclass
-import matplotlib.pyplot as plt
 
 
 @dataclass
-class ConvergenceMetrics:
-    """Metrics characterizing convergence behavior."""
-    convergence_time: int
-    final_loss: float
-    gradient_variance: float
-    oscillation_frequency: float
-    basin_escape_probability: float
-    
-    def __repr__(self) -> str:
-        return f"""ConvergenceMetrics(
-    Convergence Time: {self.convergence_time} steps
-    Final Loss: {self.final_loss:.6f}
-    Gradient Variance: {self.gradient_variance:.6f}
-    Oscillation Frequency: {self.oscillation_frequency:.4f}
-    Basin Escape Probability: {self.basin_escape_probability:.4f}
-)"""
+class ConvergenceResults:
+    """Results from convergence analysis."""
+    converged: bool
+    convergence_rate: float
+    bias: float
+    variance: float
+    iterations_to_converge: int
+    final_error: float
+    trajectory: List[float]
 
 
 class ConvergenceAnalyzer:
     """
-    Analyze convergence properties of approximation methods.
+    Analyzes convergence properties of approximation methods.
     
-    This class provides tools to study how approximation quality affects:
-    1. Convergence speed
-    2. Final accuracy
-    3. Gradient stability
-    4. Escape from local minima
+    Studies:
+    1. Convergence rate (exponential, polynomial, etc.)
+    2. Bias (systematic error)
+    3. Variance (random fluctuations)
+    4. Asymptotic behavior
     """
     
-    def __init__(self, approx_func: Callable, discrete_func: Callable,
-                 device: str = 'cpu'):
+    def __init__(self, tolerance: float = 1e-4, max_iterations: int = 10000):
+        self.tolerance = tolerance
+        self.max_iterations = max_iterations
+        
+    def analyze_convergence(
+        self,
+        approximation_fn: Callable,
+        discrete_fn: Callable,
+        input_generator: Callable,
+        n_samples: int = 1000,
+        parameter_schedule: Optional[List] = None
+    ) -> ConvergenceResults:
         """
-        Initialize convergence analyzer.
+        Analyze convergence of an approximation method.
         
         Args:
-            approx_func: Approximation function
-            discrete_func: True discrete function
-            device: Torch device
-        """
-        self.approx_func = approx_func
-        self.discrete_func = discrete_func
-        self.device = device
-        
-    def analyze_convergence_trajectory(self,
-                                      x_init: torch.Tensor,
-                                      y: torch.Tensor,
-                                      target: torch.Tensor,
-                                      learning_rate: float = 0.01,
-                                      num_steps: int = 1000,
-                                      convergence_threshold: float = 1e-3) -> ConvergenceMetrics:
-        """
-        Analyze full convergence trajectory.
-        
-        Simulates gradient descent on a simple optimization problem and
-        measures convergence properties.
-        
-        Problem: min_x ||approx_func(x, y) - target||²
-        
-        Args:
-            x_init: Initial parameter value
-            y: Fixed second input
-            target: Target output
-            learning_rate: Step size for gradient descent
-            num_steps: Maximum optimization steps
-            convergence_threshold: Loss threshold for convergence
+            approximation_fn: Approximation function (parameterized)
+            discrete_fn: True discrete function
+            input_generator: Function to generate random inputs
+            n_samples: Number of samples per iteration
+            parameter_schedule: Schedule of approximation parameters (e.g., temperature)
             
         Returns:
-            ConvergenceMetrics object
+            Convergence analysis results
         """
-        x = x_init.clone().requires_grad_(True)
-        optimizer = torch.optim.SGD([x], lr=learning_rate)
+        if parameter_schedule is None:
+            # Default: exponential annealing
+            parameter_schedule = [10.0 * (0.95 ** i) for i in range(self.max_iterations)]
         
-        loss_history = []
-        gradient_history = []
+        errors = []
+        biases = []
+        variances = []
+        
         converged = False
-        convergence_time = num_steps
+        convergence_iteration = self.max_iterations
         
-        for step in range(num_steps):
-            optimizer.zero_grad()
+        for iter_idx, param in enumerate(parameter_schedule):
+            # Generate samples
+            inputs = input_generator(n_samples)
             
-            # Forward pass
-            output = self.approx_func(x, y)
-            loss = torch.mean((output - target) ** 2)
+            # Compute discrete and approximate outputs
+            with torch.no_grad():
+                discrete_outputs = []
+                approx_outputs = []
+                
+                for inp in inputs:
+                    if isinstance(inp, tuple):
+                        x, y = inp
+                    else:
+                        x = inp
+                        y = None
+                    
+                    discrete_out = discrete_fn(x, y) if y is not None else discrete_fn(x)
+                    approx_out = approximation_fn(x, y, param) if y is not None else approximation_fn(x, param)
+                    
+                    discrete_outputs.append(discrete_out)
+                    approx_outputs.append(approx_out)
+                
+                discrete_outputs = torch.stack(discrete_outputs)
+                approx_outputs = torch.stack(approx_outputs)
             
-            # Backward pass
-            loss.backward()
-            gradient = x.grad.clone()
+            # Compute error metrics
+            error = torch.abs(discrete_outputs - approx_outputs).mean().item()
+            bias = (approx_outputs - discrete_outputs).mean().item()
+            variance = torch.var(approx_outputs - discrete_outputs).item()
             
-            # Track history
-            loss_history.append(loss.item())
-            gradient_history.append(gradient.norm().item())
+            errors.append(error)
+            biases.append(bias)
+            variances.append(variance)
             
             # Check convergence
-            if loss.item() < convergence_threshold and not converged:
-                convergence_time = step
+            if error < self.tolerance and not converged:
                 converged = True
+                convergence_iteration = iter_idx
             
-            # Update parameters
-            optimizer.step()
+            # Early stopping if we have enough data
+            if iter_idx > 100 and iter_idx % 100 == 0:
+                # Check if error is plateauing
+                recent_errors = errors[-100:]
+                if np.std(recent_errors) < self.tolerance / 10:
+                    break
         
-        # Compute metrics
-        final_loss = loss_history[-1]
-        gradient_variance = np.var(gradient_history)
+        # Estimate convergence rate
+        convergence_rate = self._estimate_convergence_rate(errors)
         
-        # Oscillation frequency (using FFT)
-        if len(loss_history) > 10:
-            fft = np.fft.fft(loss_history)
-            freqs = np.fft.fftfreq(len(loss_history))
-            peak_freq_idx = np.argmax(np.abs(fft[1:len(fft)//2])) + 1
-            oscillation_frequency = abs(freqs[peak_freq_idx])
-        else:
-            oscillation_frequency = 0.0
-        
-        # Basin escape probability (estimated from gradient reversals)
-        gradient_signs = np.sign(gradient_history)
-        sign_changes = np.sum(np.diff(gradient_signs) != 0)
-        basin_escape_prob = sign_changes / len(gradient_history)
-        
-        return ConvergenceMetrics(
-            convergence_time=convergence_time,
-            final_loss=final_loss,
-            gradient_variance=gradient_variance,
-            oscillation_frequency=oscillation_frequency,
-            basin_escape_probability=basin_escape_prob
+        return ConvergenceResults(
+            converged=converged,
+            convergence_rate=convergence_rate,
+            bias=biases[-1] if biases else 0.0,
+            variance=variances[-1] if variances else 0.0,
+            iterations_to_converge=convergence_iteration,
+            final_error=errors[-1] if errors else float('inf'),
+            trajectory=errors
         )
     
-    def compare_approximation_quality(self,
-                                     steepness_values: List[float],
-                                     x: torch.Tensor,
-                                     y: torch.Tensor) -> Dict:
+    def _estimate_convergence_rate(self, errors: List[float]) -> float:
         """
-        Compare convergence across different approximation qualities.
+        Estimate convergence rate from error trajectory.
         
-        For sigmoid-based approximations, steepness controls quality:
-        - Low steepness: smooth but inaccurate
-        - High steepness: accurate but discontinuous gradients
+        Fits exponential: error(t) = A * exp(-λt)
+        Returns λ (convergence rate).
         
         Args:
-            steepness_values: List of steepness parameters to test
-            x: Input tensor
-            y: Input tensor
+            errors: List of errors over iterations
             
         Returns:
-            Dictionary with results for each steepness
+            Estimated convergence rate λ
         """
-        results = {}
+        if len(errors) < 10:
+            return 0.0
         
-        for k in steepness_values:
-            # Create approximation with this steepness
-            from .bridge import SigmoidApproximation
-            approx = SigmoidApproximation(
-                self.discrete_func,
-                steepness=k,
-                device=self.device
-            )
-            
-            # Compute forward error
-            output = approx.forward(x, y)
-            discrete_output = self.discrete_func(x, y)
-            forward_error = torch.abs(output - discrete_output).mean().item()
-            
-            # Compute gradient stability
-            x_var = x.clone().requires_grad_(True)
-            out = approx.forward(x_var, y)
-            grad = torch.autograd.grad(out.sum(), x_var)[0]
-            
-            gradient_variance = grad.var().item()
-            gradient_mean = grad.mean().item()
-            
-            # Check for gradient inversion
-            true_grad_sign = 1.0  # Assume positive for modular addition
-            inversion_rate = (grad < 0).float().mean().item()
-            
-            results[f'k={k}'] = {
-                'forward_error': forward_error,
-                'gradient_variance': gradient_variance,
-                'gradient_mean': gradient_mean,
-                'inversion_rate': inversion_rate
-            }
+        # Take log of errors (for exponential fit)
+        errors_array = np.array(errors)
+        errors_array = np.maximum(errors_array, 1e-10)  # Avoid log(0)
+        log_errors = np.log(errors_array)
         
-        return results
+        # Fit linear model: log(error) = log(A) - λt
+        t = np.arange(len(errors))
+        
+        # Use robust regression (in case of outliers)
+        try:
+            slope, intercept, r_value, p_value, std_err = stats.linregress(t, log_errors)
+            convergence_rate = -slope  # Negative slope = convergence rate
+            return max(0.0, convergence_rate)
+        except:
+            return 0.0
     
-    def measure_gradient_noise_amplification(self,
-                                            x: torch.Tensor,
-                                            y: torch.Tensor,
-                                            noise_levels: List[float]) -> Dict:
+    def analyze_bias_variance_tradeoff(
+        self,
+        approximation_fn: Callable,
+        discrete_fn: Callable,
+        input_generator: Callable,
+        parameter_values: List[float],
+        n_trials: int = 100
+    ) -> Dict[str, List[float]]:
         """
-        Measure how approximation amplifies gradient noise.
+        Analyze bias-variance tradeoff for different parameter values.
         
-        Gradient noise can be amplified by discontinuities in the
-        approximation, leading to unstable optimization.
+        For each parameter value (e.g., temperature, steepness):
+        - Compute bias (systematic error)
+        - Compute variance (random fluctuations)
+        - Total error = bias^2 + variance
         
         Args:
-            x: Input tensor
-            y: Input tensor
-            noise_levels: List of noise standard deviations
+            approximation_fn: Approximation function
+            discrete_fn: True discrete function
+            input_generator: Input generator
+            parameter_values: List of parameter values to test
+            n_trials: Number of trials per parameter
             
         Returns:
-            Dictionary with noise amplification factors
+            Dictionary with bias, variance, and total error for each parameter
         """
-        results = {}
+        biases = []
+        variances = []
+        total_errors = []
         
-        # Baseline gradient
-        x_var = x.clone().requires_grad_(True)
-        output = self.approx_func(x_var, y)
-        baseline_grad = torch.autograd.grad(output.sum(), x_var)[0]
-        baseline_norm = baseline_grad.norm().item()
-        
-        for noise_std in noise_levels:
-            amplifications = []
+        for param in parameter_values:
+            trial_outputs = []
+            discrete_outputs_ref = None
             
-            for _ in range(10):  # Multiple trials
-                # Add noise to input
-                noise = torch.randn_like(x) * noise_std
-                x_noisy = x + noise
+            for trial in range(n_trials):
+                # Generate same inputs but with different random seeds (for stochastic methods)
+                inputs = input_generator(100)
                 
-                # Compute gradient with noise
-                x_var = x_noisy.clone().requires_grad_(True)
-                output_noisy = self.approx_func(x_var, y)
-                noisy_grad = torch.autograd.grad(output_noisy.sum(), x_var)[0]
+                with torch.no_grad():
+                    discrete_outs = []
+                    approx_outs = []
+                    
+                    for inp in inputs:
+                        if isinstance(inp, tuple):
+                            x, y = inp
+                        else:
+                            x = inp
+                            y = None
+                        
+                        discrete_out = discrete_fn(x, y) if y is not None else discrete_fn(x)
+                        approx_out = approximation_fn(x, y, param) if y is not None else approximation_fn(x, param)
+                        
+                        discrete_outs.append(discrete_out)
+                        approx_outs.append(approx_out)
+                    
+                    discrete_outputs = torch.stack(discrete_outs)
+                    approx_outputs = torch.stack(approx_outs)
                 
-                # Measure amplification
-                grad_change = torch.abs(noisy_grad - baseline_grad).norm().item()
-                amplification = grad_change / (noise_std * np.sqrt(x.numel()))
-                amplifications.append(amplification)
+                if discrete_outputs_ref is None:
+                    discrete_outputs_ref = discrete_outputs
+                
+                trial_outputs.append(approx_outputs)
             
-            results[f'noise_{noise_std}'] = {
-                'mean_amplification': np.mean(amplifications),
-                'std_amplification': np.std(amplifications)
-            }
+            # Stack all trials
+            trial_outputs = torch.stack(trial_outputs)  # (n_trials, n_samples)
+            
+            # Compute bias: E[f̂(x)] - f(x)
+            expected_approx = trial_outputs.mean(dim=0)
+            bias = (expected_approx - discrete_outputs_ref).mean().item()
+            
+            # Compute variance: Var[f̂(x)]
+            variance = trial_outputs.var(dim=0).mean().item()
+            
+            # Total error: bias^2 + variance
+            total_error = bias**2 + variance
+            
+            biases.append(bias)
+            variances.append(variance)
+            total_errors.append(total_error)
         
-        return results
+        return {
+            'parameters': parameter_values,
+            'bias': biases,
+            'variance': variances,
+            'total_error': total_errors,
+            'bias_squared': [b**2 for b in biases]
+        }
+    
+    def analyze_temperature_annealing(
+        self,
+        approximation_fn: Callable,
+        discrete_fn: Callable,
+        input_generator: Callable,
+        initial_temp: float = 10.0,
+        final_temp: float = 0.1,
+        n_steps: int = 100,
+        anneal_schedule: str = 'exponential'
+    ) -> Dict[str, any]:
+        """
+        Analyze convergence under temperature annealing.
+        
+        Args:
+            approximation_fn: Temperature-dependent approximation
+            discrete_fn: True discrete function
+            input_generator: Input generator
+            initial_temp: Starting temperature
+            final_temp: Final temperature
+            n_steps: Number of annealing steps
+            anneal_schedule: 'exponential', 'linear', or 'cosine'
+            
+        Returns:
+            Annealing analysis results
+        """
+        # Generate temperature schedule
+        if anneal_schedule == 'exponential':
+            temperatures = [initial_temp * (final_temp / initial_temp) ** (i / n_steps) 
+                          for i in range(n_steps)]
+        elif anneal_schedule == 'linear':
+            temperatures = [initial_temp - (initial_temp - final_temp) * (i / n_steps) 
+                          for i in range(n_steps)]
+        elif anneal_schedule == 'cosine':
+            temperatures = [final_temp + 0.5 * (initial_temp - final_temp) * 
+                          (1 + np.cos(np.pi * i / n_steps)) 
+                          for i in range(n_steps)]
+        else:
+            raise ValueError(f"Unknown anneal schedule: {anneal_schedule}")
+        
+        # Analyze convergence
+        results = self.analyze_convergence(
+            approximation_fn,
+            discrete_fn,
+            input_generator,
+            n_samples=100,
+            parameter_schedule=temperatures
+        )
+        
+        return {
+            'convergence_results': results,
+            'temperature_schedule': temperatures,
+            'anneal_schedule': anneal_schedule,
+            'converged': results.converged,
+            'final_temperature': temperatures[-1],
+            'convergence_rate': results.convergence_rate
+        }
 
 
-def analyze_temperature_schedule(initial_temp: float = 10.0,
-                                 final_temp: float = 0.1,
-                                 num_steps: int = 1000,
-                                 schedule_type: str = 'exponential') -> np.ndarray:
+def analyze_approximation_convergence(
+    approximation_fn: Callable,
+    discrete_fn: Callable,
+    input_generator: Callable,
+    n_samples: int = 1000
+) -> ConvergenceResults:
     """
-    Analyze temperature annealing schedules.
-    
-    Temperature controls approximation quality over time:
-    - Start high: smooth gradients, easy optimization
-    - End low: accurate discrete behavior
-    
-    Schedules:
-    ----------
-    1. Exponential: τ(t) = τ_final + (τ_init - τ_final)·exp(-λt)
-    2. Linear: τ(t) = τ_init - (τ_init - τ_final)·t/T
-    3. Cosine: τ(t) = τ_final + 0.5·(τ_init - τ_final)·(1 + cos(πt/T))
-    4. Step: τ(t) = τ_init if t < T/2 else τ_final
+    Convenience function to analyze approximation convergence.
     
     Args:
-        initial_temp: Starting temperature
-        final_temp: Ending temperature
-        num_steps: Number of optimization steps
-        schedule_type: Type of schedule ('exponential', 'linear', 'cosine', 'step')
+        approximation_fn: Approximation function
+        discrete_fn: Discrete function
+        input_generator: Function to generate inputs
+        n_samples: Number of samples
         
     Returns:
-        Array of temperature values over time
+        Convergence results
     """
-    t = np.linspace(0, 1, num_steps)
-    
-    if schedule_type == 'exponential':
-        # Exponential decay: τ(t) = τ_f + (τ_i - τ_f)·exp(-5t)
-        temps = final_temp + (initial_temp - final_temp) * np.exp(-5 * t)
-        
-    elif schedule_type == 'linear':
-        # Linear decay
-        temps = initial_temp - (initial_temp - final_temp) * t
-        
-    elif schedule_type == 'cosine':
-        # Cosine annealing
-        temps = final_temp + 0.5 * (initial_temp - final_temp) * (1 + np.cos(np.pi * t))
-        
-    elif schedule_type == 'step':
-        # Step decay (sudden change at midpoint)
-        temps = np.where(t < 0.5, initial_temp, final_temp)
-        
-    else:
-        raise ValueError(f"Unknown schedule type: {schedule_type}")
-    
-    return temps
-
-
-def measure_approximation_quality(approx_func: Callable,
-                                  discrete_func: Callable,
-                                  x: torch.Tensor,
-                                  y: torch.Tensor,
-                                  temperature: float = 1.0) -> Dict[str, float]:
-    """
-    Comprehensive quality measurement for a single approximation.
-    
-    Measures:
-    1. Forward fidelity: |g(x,y) - f(x,y)|
-    2. Gradient fidelity: cor(∇g, ∇f_fd)
-    3. Smoothness: Lipschitz constant
-    4. Information preservation: Mutual information
-    5. Robustness: Stability to perturbations
-    
-    Args:
-        approx_func: Approximation function
-        discrete_func: True discrete function
-        x: Input tensor
-        y: Input tensor
-        temperature: Approximation temperature parameter
-        
-    Returns:
-        Dictionary with quality metrics
-    """
-    # 1. Forward fidelity
-    with torch.no_grad():
-        approx_out = approx_func(x, y)
-        discrete_out = discrete_func(x, y)
-        forward_fidelity = 1.0 - torch.abs(approx_out - discrete_out).mean().item()
-    
-    # 2. Gradient fidelity
-    epsilon = 1e-3
-    x_var = x.clone().requires_grad_(True)
-    approx_output = approx_func(x_var, y)
-    approx_grad = torch.autograd.grad(approx_output.sum(), x_var)[0]
-    
-    with torch.no_grad():
-        discrete_grad_fd = (discrete_func(x + epsilon, y) - discrete_func(x, y)) / epsilon
-    
-    grad_correlation = torch.corrcoef(torch.stack([
-        approx_grad.flatten(),
-        discrete_grad_fd.flatten()
-    ]))[0, 1].item()
-    
-    # 3. Smoothness (inverse of max gradient magnitude)
-    smoothness = 1.0 / (approx_grad.abs().max().item() + 1e-6)
-    
-    # 4. Information preservation (via discrete accuracy)
-    approx_binary = (approx_out > 0.5).float()
-    accuracy = (approx_binary == discrete_out).float().mean().item()
-    
-    # 5. Robustness
-    noise = torch.randn_like(x) * 0.01
-    approx_noisy = approx_func(x + noise, y)
-    robustness = 1.0 - torch.abs(approx_noisy - approx_out).mean().item()
-    
-    # Overall quality score (weighted average)
-    quality_score = (
-        0.3 * forward_fidelity +
-        0.2 * grad_correlation +
-        0.2 * smoothness +
-        0.2 * accuracy +
-        0.1 * robustness
+    analyzer = ConvergenceAnalyzer()
+    return analyzer.analyze_convergence(
+        approximation_fn,
+        discrete_fn,
+        input_generator,
+        n_samples
     )
-    
-    return {
-        'forward_fidelity': forward_fidelity,
-        'gradient_correlation': grad_correlation,
-        'smoothness': smoothness,
-        'discrete_accuracy': accuracy,
-        'robustness': robustness,
-        'overall_quality': quality_score
-    }
 
 
-def visualize_convergence_comparison(results: Dict[str, ConvergenceMetrics],
-                                    save_path: Optional[str] = None):
+def compute_approximation_bias(
+    approximation_outputs: torch.Tensor,
+    discrete_outputs: torch.Tensor
+) -> float:
     """
-    Visualize convergence comparison across methods.
+    Compute bias of approximation.
+    
+    Bias = E[f̂(x) - f(x)]
     
     Args:
-        results: Dictionary mapping method names to ConvergenceMetrics
-        save_path: Optional path to save figure
-    """
-    methods = list(results.keys())
-    
-    # Extract metrics
-    conv_times = [results[m].convergence_time for m in methods]
-    final_losses = [results[m].final_loss for m in methods]
-    grad_variances = [results[m].gradient_variance for m in methods]
-    
-    # Create figure
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    
-    # Plot 1: Convergence time
-    axes[0].bar(methods, conv_times)
-    axes[0].set_ylabel('Convergence Time (steps)')
-    axes[0].set_title('Convergence Speed')
-    axes[0].tick_params(axis='x', rotation=45)
-    
-    # Plot 2: Final loss
-    axes[1].bar(methods, final_losses)
-    axes[1].set_ylabel('Final Loss')
-    axes[1].set_title('Final Accuracy')
-    axes[1].set_yscale('log')
-    axes[1].tick_params(axis='x', rotation=45)
-    
-    # Plot 3: Gradient variance
-    axes[2].bar(methods, grad_variances)
-    axes[2].set_ylabel('Gradient Variance')
-    axes[2].set_title('Gradient Stability')
-    axes[2].tick_params(axis='x', rotation=45)
-    
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Figure saved to {save_path}")
-    
-    return fig
-
-
-def compute_theoretical_convergence_bound(lipschitz_constant: float,
-                                         smoothness_constant: float,
-                                         learning_rate: float,
-                                         initial_error: float) -> Tuple[int, float]:
-    """
-    Compute theoretical convergence bound for gradient descent.
-    
-    For a function with Lipschitz constant L and smoothness μ:
-    
-        ||x_t - x*||² ≤ (1 - 2μα + L²α²)^t · ||x_0 - x*||²
-    
-    where α is the learning rate.
-    
-    Convergence guaranteed if: α < 2μ/L²
-    
-    Args:
-        lipschitz_constant: L (gradient Lipschitz constant)
-        smoothness_constant: μ (strong convexity parameter)
-        learning_rate: α (step size)
-        initial_error: ||x_0 - x*||²
+        approximation_outputs: Outputs from approximation
+        discrete_outputs: True discrete outputs
         
     Returns:
-        (estimated_iterations, final_error)
+        Bias value
     """
-    # Check convergence condition
-    if learning_rate >= 2 * smoothness_constant / (lipschitz_constant ** 2):
-        return float('inf'), float('inf')  # No convergence guarantee
-    
-    # Convergence rate
-    convergence_rate = 1 - 2 * smoothness_constant * learning_rate + \
-                      (lipschitz_constant ** 2) * (learning_rate ** 2)
-    
-    # Iterations to reach error threshold (e.g., 1e-6)
-    error_threshold = 1e-6
-    if convergence_rate < 1:
-        iterations = int(np.log(error_threshold / initial_error) / np.log(convergence_rate))
-        final_error = initial_error * (convergence_rate ** iterations)
-    else:
-        iterations = float('inf')
-        final_error = float('inf')
-    
-    return iterations, final_error
+    return (approximation_outputs - discrete_outputs).mean().item()
 
 
-from typing import Optional
+def estimate_convergence_rate(errors: List[float]) -> float:
+    """
+    Estimate convergence rate from error trajectory.
+    
+    Args:
+        errors: List of errors over time
+        
+    Returns:
+        Estimated convergence rate
+    """
+    analyzer = ConvergenceAnalyzer()
+    return analyzer._estimate_convergence_rate(errors)
+
+
+def compare_convergence_properties(
+    approximations: Dict[str, Callable],
+    discrete_fn: Callable,
+    input_generator: Callable,
+    n_samples: int = 1000
+) -> Dict[str, ConvergenceResults]:
+    """
+    Compare convergence properties of multiple approximation methods.
+    
+    Args:
+        approximations: Dictionary of approximation functions
+        discrete_fn: True discrete function
+        input_generator: Input generator
+        n_samples: Number of samples
+        
+    Returns:
+        Dictionary mapping method names to convergence results
+    """
+    analyzer = ConvergenceAnalyzer()
+    results = {}
+    
+    for name, approx_fn in approximations.items():
+        print(f"Analyzing {name}...")
+        results[name] = analyzer.analyze_convergence(
+            approx_fn,
+            discrete_fn,
+            input_generator,
+            n_samples
+        )
+    
+    return results

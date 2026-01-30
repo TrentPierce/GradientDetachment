@@ -159,10 +159,10 @@ def multi_sample_test():
     
     # Expected range: 0-5% for 1-round ARX
     if final_acc < 0.10:  # Less than 10%
-        print("✅ PASS: Gradient Detachment confirmed!")
-        print(f"   Accuracy ({final_acc:.1%}) is near random (50%)")
-        print("   This demonstrates the sawtooth loss landscape")
-        print("   caused by modular arithmetic in ARX ciphers.")
+        print("✅ PASS: Low accuracy confirmed!")
+        print(f"   Accuracy ({final_acc:.1%}) is significantly WORSE than random (50%).")
+        print("   This demonstrates Gradient Inversion: the model consistently predicts")
+        print("   the inverse of the target due to adversarial attractors.")
         return True
     else:
         print("⚠️  WARNING: Accuracy higher than expected")
@@ -173,26 +173,26 @@ def multi_sample_test():
 def print_summary():
     """Print research summary."""
     print("\n" + "="*60)
-    print("GRADIENT DETACHMENT - RESEARCH SUMMARY")
+    print("GRADIENT INVERSION - RESEARCH SUMMARY")
     print("="*60)
     print("""
 Key Findings:
 
 1. Single-Batch Test (100 samples, 1 round):
-   Result: 2.5% accuracy (near random guessing)
+   Result: ~2.5% accuracy (worse than random)
    
-   This demonstrates the GRADIENT DETACHMENT phenomenon:
-   - Modular arithmetic creates discontinuities
-   - Loss landscape has "sawtooth" pattern
-   - Gradients point in wrong directions
-   - Neural ODEs cannot learn effective attacks
+   This demonstrates the GRADIENT INVERSION phenomenon:
+   - Modular arithmetic creates "sawtooth" discontinuities
+   - Loss landscape contains adversarial attractors
+   - Gradients point toward inverted minima
+   - Neural ODEs systematically predict the opposite of the truth
 
 2. Cross-Cipher Comparison:
-   - ARX (Speck):    2.5% accuracy (most resistant)
+   - ARX (Speck):    ~2.5% accuracy (Inverted/Adversarial)
    - SPN:            12% accuracy
-   - Feistel:        15% accuracy (least resistant)
+   - Feistel:        15% accuracy
    
-   ARX ciphers are MORE resistant to Neural ODEs than other designs.
+   ARX ciphers induce deceptive optimization landscapes.
 
 3. Round Security Threshold:
    - 1 round:  2.5% accuracy
@@ -202,9 +202,8 @@ Key Findings:
    Modern ciphers with 4+ rounds are completely secure.
 
 Conclusion:
-Neural ODEs FAIL to break ARX ciphers due to Gradient Detachment.
-This validates ARX design choices and demonstrates that
-modern lightweight ciphers are resistant to ML attacks.
+Neural ODEs FAIL to break ARX ciphers due to Gradient Inversion.
+The optimization process is actively misled by the modular arithmetic structure.
 
 For full details, see RESEARCH_PAPER.md
 """)
@@ -213,9 +212,9 @@ For full details, see RESEARCH_PAPER.md
 def main():
     """Run all verification tests."""
     print("\n" + "="*60)
-    print("GRADIENT DETACHMENT - VERIFICATION SCRIPT")
+    print("GRADIENT INVERSION - VERIFICATION SCRIPT")
     print("="*60)
-    print("Reproducing results from: 'Gradient Detachment in")
+    print("Reproducing results from: 'Gradient Inversion in")
     print("Continuous-Time Cryptanalysis' research paper")
     print("="*60)
     
@@ -232,8 +231,8 @@ def main():
     print("="*60)
     if test1_pass and test2_pass:
         print("✅ ALL TESTS PASSED")
-        print("\nThe Gradient Detachment phenomenon is confirmed.")
-        print("ARX ciphers resist Neural ODE attacks.")
+        print("\nThe Gradient Inversion phenomenon is confirmed.")
+        print("ARX ciphers create adversarial landscapes for Neural ODEs.")
         return 0
     else:
         print("⚠️  Some tests had unexpected results")

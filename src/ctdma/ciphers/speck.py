@@ -37,20 +37,31 @@ class SpeckCipher(nn.Module):
         
     def _soft_xor(self, x, y, steepness=10.0):
         """
-        Smooth XOR approximation using tanh.
+        Smooth XOR approximation using sigmoid-based soft selection.
         
-        XOR(x,y) = x + y - 2*AND(x,y)
-        Using smooth AND: (tanh(steepness*(x+y-1)) + 1) / 2
+        XOR is equivalent to: (x AND NOT y) OR (NOT x AND y)
+        For smooth version, we use sigmoid to approximate the logic.
         """
-        # Normalize to [-1, 1] for tanh
-        x_norm = 2 * x - 1
-        y_norm = 2 * y - 1
+        # Soft NOT: 1 - x
+        not_x = 1 - x
+        not_y = 1 - y
         
-        # Smooth multiplication (AND)
-        smooth_and = (torch.tanh(steepness * (x + y - 1)) + 1) / 2
+        # Soft AND using multiplication (works for probabilities in [0,1])
+        # For steepness control, we can sharpen the inputs
+        x_sharp = torch.sigmoid(steepness * (x - 0.5))
+        y_sharp = torch.sigmoid(steepness * (y - 0.5))
+        not_x_sharp = torch.sigmoid(steepness * (not_x - 0.5))
+        not_y_sharp = torch.sigmoid(steepness * (not_y - 0.5))
         
-        # XOR from AND
-        result = x + y - 2 * smooth_and
+        # XOR = (x AND NOT y) OR (NOT x AND y)
+        # For soft version: x*(1-y) + (1-x)*y - x*(1-x)*y*(1-y)*2
+        # Simplified: x + y - 2*x*y for binary, but we need smooth
+        term1 = x_sharp * not_y_sharp
+        term2 = not_x_sharp * y_sharp
+        
+        # Soft OR using addition with saturation
+        result = term1 + term2 - term1 * term2
+        
         return torch.clamp(result, 0, 1)
     
     def _smooth_rotate(self, x, r):
@@ -114,11 +125,13 @@ class SpeckCipher(nn.Module):
         x = self._smooth_rotate(x, self.alpha)
         y = self._smooth_rotate(y, -self.beta)
         
-        # Soft addition with key
+        # Soft addition: x = x + y
         x = self._soft_add(x, y)
-        x = self._soft_add(x, k)
         
-        # Soft XOR
+        # XOR with round key: x = x XOR k (standard Speck uses XOR, not addition)
+        x = self._soft_xor(x, k)
+        
+        # XOR x into y: y = y XOR x
         y = self._soft_xor(y, x)
         
         return x, y

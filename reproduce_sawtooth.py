@@ -20,7 +20,6 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from ctdma.ciphers.speck import SpeckCipher
-from ctdma.neural_ode.solver import NeuralODESolver
 from ctdma.attacks.differential import DifferentialAttack
 
 
@@ -61,7 +60,7 @@ def single_batch_test():
         
         # Create differential pair
         plaintext_diff = plaintext.clone()
-        plaintext_diff[:, 0] = plaintext_diff[:, 0] ^ 0.5  # XOR with 0.5
+        plaintext_diff[:, 0] = (plaintext_diff[:, 0] + 0.5) % 1.0  # Add delta (wrap around)
         
         ct1 = cipher.encrypt(plaintext, key)
         ct2 = cipher.encrypt(plaintext_diff, key)
@@ -126,20 +125,19 @@ def multi_sample_test():
     
     accuracies = []
     
+    # Generate labels once (constant throughout training)
+    labels = torch.randint(0, 2, (num_samples,), device=device)
+    
     for epoch in range(50):
         # Create differential pairs
         plaintexts_diff = plaintexts.clone()
-        plaintexts_diff[:, 0] = plaintexts_diff[:, 0] ^ 0.5
+        plaintexts_diff[:, 0] = (plaintexts_diff[:, 0] + 0.5) % 1.0  # Add delta (wrap around)
         
         ct1 = cipher.encrypt(plaintexts, keys)
         ct2 = cipher.encrypt(plaintexts_diff, keys)
         
         diff = ct1 - ct2
         features = diff.view(num_samples, -1)
-        
-        # Random labels for this test (we're measuring if model can learn ANY pattern)
-        # In real attack, labels would distinguish real vs random
-        labels = torch.randint(0, 2, (num_samples,), device=device)
         
         optimizer.zero_grad()
         outputs = model(features)

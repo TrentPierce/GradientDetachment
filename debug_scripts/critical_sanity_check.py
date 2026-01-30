@@ -58,7 +58,7 @@ def critical_sanity_check():
         
         # Create differential
         plaintext_diff = plaintext.clone()
-        plaintext_diff[:, 0] = plaintext_diff[:, 0] ^ 0.5
+        plaintext_diff[:, 0] = (plaintext_diff[:, 0] + 0.5) % 1.0  # Add delta (wrap around)
         
         ct1 = cipher.encrypt(plaintext, key)
         ct2 = cipher.encrypt(plaintext_diff, key)

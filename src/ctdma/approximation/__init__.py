@@ -1,9 +1,8 @@
 """
-Approximation Bridging Module
+Approximation Module for Discrete-to-Continuous Operation Bridging
 
-This module provides various approximation techniques for discrete cryptographic
-operations, enabling gradient-based analysis while maintaining fidelity to the
-original discrete functions.
+This module provides multiple approximation techniques for discrete cryptographic
+operations, enabling gradient flow while analyzing approximation fidelity.
 """
 
 from .bridge import (
@@ -11,20 +10,21 @@ from .bridge import (
     SigmoidApproximation,
     StraightThroughEstimator,
     GumbelSoftmaxApproximation,
-    TemperatureSmoothing
+    TemperatureAnnealing
 )
 
 from .metrics import (
     ApproximationMetrics,
-    compute_fidelity,
-    compute_gradient_similarity,
-    compute_discrete_error
+    compute_approximation_error,
+    compute_gradient_fidelity,
+    compute_information_preservation
 )
 
 from .convergence import (
     ConvergenceAnalyzer,
-    analyze_temperature_schedule,
-    measure_approximation_quality
+    analyze_approximation_convergence,
+    compute_approximation_bias,
+    estimate_convergence_rate
 )
 
 __all__ = [
@@ -32,12 +32,13 @@ __all__ = [
     'SigmoidApproximation',
     'StraightThroughEstimator',
     'GumbelSoftmaxApproximation',
-    'TemperatureSmoothing',
+    'TemperatureAnnealing',
     'ApproximationMetrics',
-    'compute_fidelity',
-    'compute_gradient_similarity',
-    'compute_discrete_error',
     'ConvergenceAnalyzer',
-    'analyze_temperature_schedule',
-    'measure_approximation_quality'
+    'compute_approximation_error',
+    'compute_gradient_fidelity',
+    'compute_information_preservation',
+    'analyze_approximation_convergence',
+    'compute_approximation_bias',
+    'estimate_convergence_rate'
 ]

@@ -2,100 +2,120 @@
 Mathematical Theory Module for Gradient Inversion Analysis
 
 This module provides rigorous mathematical foundations for understanding
-gradient inversion in ARX ciphers.
+gradient inversion in ARX ciphers, including:
 
-Modules:
-    - mathematical_analysis: Core analysis tools
-    - theorems: Formal theorem implementations
-    - formal_proofs: Rigorous mathematical proofs
-    - topology_theory: Topological analysis and Morse theory
+1. Formal theorem statements with complete proofs
+2. Topological analysis of loss landscapes  
+3. Information-theoretic bounds
+4. Convergence analysis using dynamical systems theory
 
-Key Classes:
-    - GradientInversionAnalyzer: Analyze gradient discontinuities
-    - SawtoothTopologyAnalyzer: Study loss landscape topology
-    - InformationTheoreticAnalyzer: Information-theoretic analysis
-    - CompositeFormalProof: Unified proof framework
-    - TopologicalAnalyzer: Complete topological characterization
+Submodules:
+===========
+- formal_proofs: Complete theorem statements and detailed proofs
+- topology_theory: Sawtooth topology and basin analysis
+- information_theory: Shannon entropy and channel capacity
+- convergence_theory: Lyapunov analysis and fixed point theory
+- mathematical_analysis: Numerical analysis tools
+- theorems: Theorem implementations and verification
 
-Example:
-    >>> from ctdma.theory import GradientInversionTheorem
-    >>> theorem = GradientInversionTheorem()
-    >>> results = theorem.validate(x, y)
-    >>> print(f"Inversion rate: {results['inversion_rate']:.2%}")
+Usage:
+======
+from ctdma.theory import GradientInversionTheorems, InformationTheoreticAnalysis
+from ctdma.theory import ProofCompendium, SawtoothTopologyTheory
+
+# Get formal proof
+proof = ProofCompendium.proof_1_gradient_discontinuity()
+proof.display()
+
+# Verify theorem numerically
+from ctdma.theory import verify_all_theorems
+results = verify_all_theorems()
 """
 
 # Core analyzers
 from .mathematical_analysis import (
     GradientInversionAnalyzer,
     SawtoothTopologyAnalyzer,
-    InformationTheoreticAnalyzer,
-    compute_gradient_discontinuity,
-    analyze_loss_landscape,
-    theoretical_inversion_probability
+    InformationTheoreticAnalyzer
 )
 
-# Theorem classes
+# Theorem implementations
 from .theorems import (
     ModularAdditionTheorem,
-    GradientInversionTheorem as TheoremGradientInversion,
+    GradientInversionTheorem,
     SawtoothConvergenceTheorem,
     InformationLossTheorem
 )
 
 # Formal proofs (new)
-from .formal_proofs import (
-    GradientInversionTheorem,
-    SawtoothTopologyTheorem,
-    InformationTheoreticTheorem,
-    CompositeFormalProof,
-    FormalTheorem,
-    print_theorem,
-    print_proof
-)
+try:
+    from .formal_proofs import (
+        GradientInversionTheorems,
+        FormalTheorem,
+        CompleteProof,
+        ProofCompendium
+    )
+except ImportError:
+    # Backward compatibility
+    pass
 
 # Topology theory (new)
-from .topology_theory import (
-    TopologicalAnalyzer,
-    SawtoothManifold,
-    GradientFlowAnalyzer,
-    CriticalPointTheory,
-    StructuralStabilityAnalyzer,
-    print_topology_summary
-)
+try:
+    from .topology_theory import (
+        SawtoothTopologyTheory,
+        TopologicalTheorem
+    )
+except ImportError:
+    pass
 
+# Information theory (new)
+try:
+    from .information_theory import (
+        InformationTheoreticAnalysis as InfoTheory,
+        InformationTheorem
+    )
+except ImportError:
+    pass
+
+# Convergence theory (new)
+try:
+    from .convergence_theory import (
+        ConvergenceTheory,
+        BasinOfAttractionAnalysis,
+        visualize_sawtooth_topology
+    )
+except ImportError:
+    pass
+
+# Export all
 __all__ = [
     # Core analyzers
     'GradientInversionAnalyzer',
     'SawtoothTopologyAnalyzer',
     'InformationTheoreticAnalyzer',
     
-    # Theorem classes (original)
+    # Original theorems
     'ModularAdditionTheorem',
-    'TheoremGradientInversion',
+    'GradientInversionTheorem',
     'SawtoothConvergenceTheorem',
     'InformationLossTheorem',
     
-    # Formal proofs (new)
-    'GradientInversionTheorem',
-    'SawtoothTopologyTheorem',
-    'InformationTheoreticTheorem',
-    'CompositeFormalProof',
+    # New formal proofs
+    'GradientInversionTheorems',
     'FormalTheorem',
-    'print_theorem',
-    'print_proof',
+    'CompleteProof',
+    'ProofCompendium',
     
-    # Topology theory (new)
-    'TopologicalAnalyzer',
-    'SawtoothManifold',
-    'GradientFlowAnalyzer',
-    'CriticalPointTheory',
-    'StructuralStabilityAnalyzer',
-    'print_topology_summary',
+    # New topology theory
+    'SawtoothTopologyTheory',
+    'TopologicalTheorem',
     
-    # Utility functions
-    'compute_gradient_discontinuity',
-    'analyze_loss_landscape',
-    'theoretical_inversion_probability'
+    # New information theory
+    'InfoTheory',
+    'InformationTheorem',
+    
+    # New convergence theory
+    'ConvergenceTheory',
+    'BasinOfAttractionAnalysis',
+    'visualize_sawtooth_topology'
 ]
-
-__version__ = '1.0.0'

@@ -1,33 +1,35 @@
 """
-Theoretical Analysis Module
+Theoretical Analysis Module for Gradient Inversion in ARX Ciphers
 
-Provides mathematical foundations and formal proofs for gradient inversion
-phenomena in ARX ciphers.
+This module provides formal mathematical analysis of why ARX operations
+create gradient inversion phenomena in Neural ODE-based cryptanalysis.
 """
 
 from .mathematical_analysis import (
-    SawtoothTopologyAnalyzer,
     GradientInversionAnalyzer,
+    SawtoothTopologyAnalyzer,
     InformationTheoreticAnalyzer,
-    ARXMathematicalFramework
+    analyze_gradient_flow,
+    compute_lipschitz_constant,
+    measure_gradient_variance
 )
 
 from .theorems import (
-    GradientInversionTheorem,
-    SawtoothConvergenceTheorem,
-    InformationLeakageTheorem,
-    ModularArithmeticLemma,
-    prove_all_theorems
+    Theorems,
+    verify_sawtooth_theorem,
+    verify_gradient_inversion_theorem,
+    verify_convergence_impossibility_theorem
 )
 
 __all__ = [
-    'SawtoothTopologyAnalyzer',
     'GradientInversionAnalyzer',
+    'SawtoothTopologyAnalyzer',
     'InformationTheoreticAnalyzer',
-    'ARXMathematicalFramework',
-    'GradientInversionTheorem',
-    'SawtoothConvergenceTheorem',
-    'InformationLeakageTheorem',
-    'ModularArithmeticLemma',
-    'prove_all_theorems'
+    'analyze_gradient_flow',
+    'compute_lipschitz_constant',
+    'measure_gradient_variance',
+    'Theorems',
+    'verify_sawtooth_theorem',
+    'verify_gradient_inversion_theorem',
+    'verify_convergence_impossibility_theorem'
 ]

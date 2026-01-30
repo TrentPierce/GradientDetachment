@@ -1,0 +1,90 @@
+{
+  "success": false,
+  "accuracy": 0.0,
+  "best_key": null,
+  "true_key": [
+    43981,
+    61185
+  ],
+  "config": {
+    "rounds": 2,
+    "num_samples": 150,
+    "num_iterations": 600,
+    "num_restarts": 8,
+    "true_key": "ABCD,EF01"
+  },
+  "all_restarts": [
+    {
+      "restart": 0,
+      "accuracy": 0.0,
+      "key": [
+        32768,
+        32768
+      ],
+      "best_during": 0.0
+    },
+    {
+      "restart": 1,
+      "accuracy": 0.0,
+      "key": [
+        32768,
+        32768
+      ],
+      "best_during": 0.0
+    },
+    {
+      "restart": 2,
+      "accuracy": 0.0,
+      "key": [
+        32768,
+        32768
+      ],
+      "best_during": 0.0
+    },
+    {
+      "restart": 3,
+      "accuracy": 0.0,
+      "key": [
+        32768,
+        32768
+      ],
+      "best_during": 0.0
+    },
+    {
+      "restart": 4,
+      "accuracy": 0.0,
+      "key": [
+        32768,
+        32768
+      ],
+      "best_during": 0.0
+    },
+    {
+      "restart": 5,
+      "accuracy": 0.0,
+      "key": [
+        32768,
+        32768
+      ],
+      "best_during": 0.0
+    },
+    {
+      "restart": 6,
+      "accuracy": 0.0,
+      "key": [
+        32768,
+        32768
+      ],
+      "best_during": 0.0
+    },
+    {
+      "restart": 7,
+      "accuracy": 0.0,
+      "key": [
+        32768,
+        32768
+      ],
+      "best_during": 0.0
+    }
+  ]
+}
